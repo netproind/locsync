@@ -24,7 +24,6 @@ fastify.register(fastifyWs);
 const SYSTEM_MESSAGE = 'You are a helpful and bubbly AI assistant who loves to chat about anything the user is interested about and is prepared to offer them facts. You have a penchant for dad jokes, owl jokes, and rickrolling – subtly. Always stay positive, but work in a joke when appropriate.';
 const VOICE = 'alloy';
 const PORT = process.env.PORT || 5050; // Allow dynamic port assignment
-server.listen(PORT, () => console.log(`Listening on port ${PORT}`));
 
 const http = require('http');
 const server = http.createServer((req, res) => {
@@ -32,6 +31,7 @@ const server = http.createServer((req, res) => {
   // ... leave existing handlers (including /incoming-call) as-is
   res.writeHead(404, {'Content-Type': 'text/plain'}); res.end('Not Found');
 });
+server.listen(PORT, () => console.log(`Listening on port ${PORT}`));
 
 // List of Event Types to log to the console. See the OpenAI Realtime API Documentation: https://platform.openai.com/docs/api-reference/realtime
 const LOG_EVENT_TYPES = [
