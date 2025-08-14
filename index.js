@@ -50,7 +50,7 @@ fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Connecting you to the A.I. voice assistant, powered by Twilio and the Open A I Realtime A P I.</Say>
+  <Say>Welcome to the Loc Repair Clinic in Southfield, Michigan. We specialize in crochet repair, interlock maintenance, and bald spot coverage. Please hold while our virtual receptionist assists you.</Say>
   <Pause length="1"/>
   <Connect>
     <Stream url="wss://${host}/media-stream" />
