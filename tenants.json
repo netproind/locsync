@@ -1,0 +1,25 @@
+{
+  "+13134884898": {
+    "tenant_id": "yesha_locsync_v1",
+    "studio_name": "Loc Repair Clinic at U Natural Hair Dreadlock Services",
+    "timezone": "America/Detroit",
+    "hours": { "open_days": [1,2,3,4,5,6], "open_hour": 0, "close_hour": 24 },
+    "booking_url": "https://locrepair.com/service_portal",
+    "transfer_number": "",
+    "policies": [
+      "Quotes required before booking; deposit goes toward service within 14 days",
+      "Cancellations: see terms page"
+    ],
+    "pricing_notes": [
+      "Interlock maintenance: $95 (2–3 turns), $125 (4–6 turns)"
+    ],
+    "services": [
+      "Crochet Loc Repair","Interlock Maintenance","Bald Coverage System",
+      "Retwists","Loc Extensions","Repairs","Combining Locs","Sisterlock Retightening",
+      "Instant Locs","Wick Maintenance","Detox","Dandruff Removal"
+    ],
+    "faq_urls": [
+      "https://raw.githubusercontent.com/NETPROIND/locsync/main/knowledge.md"
+    ]
+  }
+}
