@@ -7,6 +7,52 @@ import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 
+import { DateTime } from 'luxon';        // add to package.json if missing
+import fs from 'node:fs/promises';
+
+// Load tenants.json at startup
+let TENANTS = {};
+try {
+  const raw = await fs.readFile(new URL('./tenants.json', import.meta.url));
+  TENANTS = JSON.parse(String(raw));
+} catch (e) {
+  console.warn('tenants.json not found or invalid; TENANTS={}');
+  TENANTS = {};
+}
+
+// Simple cache for fetched knowledge text
+const kbCache = new Map(); // url -> text
+
+async function fetchKbText(urls = []) {
+  let combined = '';
+  for (const url of urls) {
+    try {
+      if (kbCache.has(url)) { combined += '\n\n' + kbCache.get(url); continue; }
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      let txt = await res.text();
+      // cap any single file to ~10k chars
+      txt = txt.slice(0, 10000);
+      kbCache.set(url, txt);
+      combined += '\n\n' + txt;
+    } catch {}
+  }
+  return combined.trim();
+}
+
+function buildInstructions(tenant, kbText) {
+  return `
+You are the voice receptionist for "${tenant.studio_name}".
+Style: Warm, professional, concise. Let callers interrupt naturally.
+Booking: ${tenant.booking_url}
+Services: ${tenant.services.join(', ')}.
+Pricing notes: ${tenant.pricing_notes.join(' | ')}.
+Policies: ${tenant.policies.join(' | ')}.
+Use this knowledge when answering FAQs (preferred over generic answers):
+${kbText || '(no additional text)'}
+Keep answers under 20 seconds. Offer to text the booking link if asked.
+Avoid medical advice; refer to a dermatologist when appropriate.`;
+}
 // Load env
 dotenv.config();
 const { OPENAI_API_KEY, NODE_ENV } = process.env;
