@@ -1,4 +1,6 @@
-// index.js (ESM) — Fastify + WebSocket + OpenAI Realtime bridge
+// index.js (ESM) — Fastify + WebSocket + OpenAI Realtime (works on Render & Twilio)
+// Requires: "type": "module" in package.json
+
 import Fastify from 'fastify';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
@@ -9,31 +11,43 @@ import fastifyWs from '@fastify/websocket';
 dotenv.config();
 const { OPENAI_API_KEY, NODE_ENV } = process.env;
 if (!OPENAI_API_KEY) {
-  console.error('Missing OpenAI API key. Set OPENAI_API_KEY in the environment.');
+  console.error('Missing OpenAI API key. Set OPENAI_API_KEY in Render → Environment.');
   process.exit(1);
 }
 
-// Constants
+// Config
+const PORT = process.env.PORT || 5050; // Render injects PORT; 5050 is local fallback
+const VOICE = 'alloy';
 const SYSTEM_MESSAGE =
   'You are a helpful and bubbly AI assistant who loves to chat about anything the user is interested in and is prepared to offer them facts. You have a penchant for dad jokes, owl jokes, and rickrolling—subtly. Always stay positive, but work in a joke when appropriate.';
-const VOICE = 'alloy';
-const PORT = process.env.PORT || 5050; // Render provides PORT; fallback for local
 
-// Fastify app
+// Event types you might want to log from OpenAI
+const LOG_EVENT_TYPES = [
+  'error',
+  'response.content.done',
+  'rate_limits.updated',
+  'response.done',
+  'input_audio_buffer.committed',
+  'input_audio_buffer.speech_stopped',
+  'input_audio_buffer.speech_started',
+  'session.created',
+];
+
+// Fastify app (single server)
 const fastify = Fastify({ logger: true });
-await fastify.register(fastifyFormBody);
-await fastify.register(fastifyWs);
 
-// Health check (Render probes /)
+// Plugins
+fastify.register(fastifyFormBody);
+fastify.register(fastifyWs);
+
+// Health (Render probes this)
 fastify.get('/', async (_req, reply) => {
   reply.type('text/plain').send('OK');
 });
 
-// Twilio incoming call → return TwiML that starts a bidirectional Media Stream
+// Twilio webhook → return TwiML that starts **bidirectional** Media Stream
 fastify.all('/incoming-call', async (request, reply) => {
-  // Use the host Twilio reached (Render gives correct public host in Host header)
   const host = request.headers['host'];
-  // IMPORTANT: use wss:// for Twilio Media Streams
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>Connecting you to the A.I. voice assistant, powered by Twilio and the Open A I Realtime A P I.</Say>
@@ -41,14 +55,14 @@ fastify.all('/incoming-call', async (request, reply) => {
   <Connect>
     <Stream url="wss://${host}/media-stream" />
   </Connect>
-</Response>`;
+</Response>`.trim();
 
   reply.type('text/xml').send(twiml);
 });
 
-// WebSocket endpoint that Twilio Media Streams will connect to
+// WebSocket endpoint for Twilio Media Streams
 fastify.register(async function (app) {
-  app.get('/media-stream', { websocket: true }, (connection, req) => {
+  app.get('/media-stream', { websocket: true }, (connection /* WebSocket */, req) => {
     app.log.info('Twilio Media Stream connected');
 
     // Per-connection state
@@ -58,7 +72,7 @@ fastify.register(async function (app) {
     let markQueue = [];
     let responseStartTimestampTwilio = null;
 
-    // Connect to OpenAI Realtime API (WebSocket)
+    // Connect to OpenAI Realtime API via WebSocket
     const openAiWs = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01',
       {
@@ -69,6 +83,7 @@ fastify.register(async function (app) {
       }
     );
 
+    // Initialize OpenAI session
     const initializeSession = () => {
       const sessionUpdate = {
         type: 'session.update',
@@ -86,17 +101,15 @@ fastify.register(async function (app) {
       openAiWs.send(JSON.stringify(sessionUpdate));
     };
 
+    // Send a "mark" to Twilio so we can detect playback boundaries
     const sendMark = () => {
       if (!streamSid) return;
-      const markEvent = {
-        event: 'mark',
-        streamSid,
-        mark: { name: 'responsePart' },
-      };
+      const markEvent = { event: 'mark', streamSid, mark: { name: 'responsePart' } };
       connection.send(JSON.stringify(markEvent));
       markQueue.push('responsePart');
     };
 
+    // If caller starts speaking, truncate assistant audio and clear Twilio buffer
     const handleSpeechStartedEvent = () => {
       if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
         const elapsed = latestMediaTimestamp - responseStartTimestampTwilio;
@@ -112,12 +125,7 @@ fastify.register(async function (app) {
         }
 
         // Tell Twilio to clear buffered audio
-        connection.send(
-          JSON.stringify({
-            event: 'clear',
-            streamSid,
-          })
-        );
+        connection.send(JSON.stringify({ event: 'clear', streamSid }));
 
         // Reset
         markQueue = [];
@@ -126,7 +134,7 @@ fastify.register(async function (app) {
       }
     };
 
-    // OpenAI WS handlers
+    // --- OpenAI WS handlers ---
     openAiWs.on('open', () => {
       app.log.info('Connected to OpenAI Realtime API');
       setTimeout(initializeSession, 100);
@@ -137,4 +145,98 @@ fastify.register(async function (app) {
       try {
         msg = JSON.parse(buf.toString());
       } catch (e) {
-        app
+        app.log.error({ e, raw: buf.toString() }, 'OpenAI message parse error');
+        return;
+      }
+
+      if (LOG_EVENT_TYPES.includes(msg.type)) {
+        app.log.info({ type: msg.type }, 'OpenAI event');
+      }
+
+      if (msg.type === 'response.audio.delta' && msg.delta) {
+        // Stream audio back to Twilio
+        if (streamSid) {
+          const audioDelta = {
+            event: 'media',
+            streamSid,
+            media: { payload: msg.delta }, // base64 g711_ulaw
+          };
+          connection.send(JSON.stringify(audioDelta));
+
+          if (!responseStartTimestampTwilio) {
+            responseStartTimestampTwilio = latestMediaTimestamp;
+          }
+          if (msg.item_id) lastAssistantItem = msg.item_id;
+          sendMark();
+        }
+      }
+
+      if (msg.type === 'input_audio_buffer.speech_started') {
+        handleSpeechStartedEvent();
+      }
+    });
+
+    openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
+    openAiWs.on('error', (err) => app.log.error({ err }, 'OpenAI WS error'));
+
+    // --- Twilio Media Streams → ingest audio/events ---
+    connection.on('message', (raw) => {
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (e) {
+        app.log.error({ e, raw: raw.toString() }, 'Twilio message parse error');
+        return;
+      }
+
+      switch (data.event) {
+        case 'start':
+          streamSid = data.start?.streamSid;
+          latestMediaTimestamp = 0;
+          responseStartTimestampTwilio = null;
+          app.log.info({ streamSid }, 'Media stream started');
+          break;
+
+        case 'media':
+          latestMediaTimestamp = data.media?.timestamp ?? latestMediaTimestamp;
+          if (openAiWs.readyState === WebSocket.OPEN) {
+            openAiWs.send(
+              JSON.stringify({
+                type: 'input_audio_buffer.append',
+                audio: data.media?.payload, // base64 g711_ulaw
+              })
+            );
+          }
+          break;
+
+        case 'mark':
+          if (markQueue.length > 0) markQueue.shift();
+          break;
+
+        case 'stop':
+          app.log.info('Media stream stopped');
+          break;
+
+        default:
+          app.log.info({ event: data.event }, 'Twilio event');
+      }
+    });
+
+    connection.on('close', () => {
+      app.log.info('Twilio WS disconnected');
+      if (openAiWs.readyState === WebSocket.OPEN) openAiWs.close();
+    });
+  });
+});
+
+// Start server (Render needs 0.0.0.0)
+const start = async () => {
+  try {
+    await fastify.listen({ port: PORT, host: '0.0.0.0' });
+    fastify.log.info(`Server is listening on port ${PORT} (${NODE_ENV || 'dev'})`);
+  } catch (err) {
+    fastify.log.error(err);
+    process.exit(1);
+  }
+};
+start();
