@@ -1,26 +1,35 @@
-// index.js (ESM) — Fastify + WebSocket + OpenAI Realtime (works on Render & Twilio)
-// Requires: "type": "module" in package.json
+// index.js (ESM) — Fastify + Twilio Media Streams + OpenAI Realtime
+// package.json must have: "type": "module"
 
 import Fastify from 'fastify';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
-
-import { DateTime } from 'luxon';        // add to package.json if missing
 import fs from 'node:fs/promises';
 
-// Load tenants.json at startup
+// ---------- ENV ----------
+dotenv.config();
+const { OPENAI_API_KEY, NODE_ENV } = process.env;
+if (!OPENAI_API_KEY) {
+  console.error('Missing OPENAI_API_KEY (set in Render → Environment).');
+  process.exit(1);
+}
+
+// ---------- CONFIG ----------
+const PORT = process.env.PORT || 5050;   // Render injects PORT
+const VOICE = 'alloy';
+
+// ---------- TENANTS + KB HELPERS ----------
 let TENANTS = {};
 try {
   const raw = await fs.readFile(new URL('./tenants.json', import.meta.url));
   TENANTS = JSON.parse(String(raw));
 } catch (e) {
-  console.warn('tenants.json not found or invalid; TENANTS={}');
+  console.warn('tenants.json not found or invalid; TENANTS = {}');
   TENANTS = {};
 }
 
-// Simple cache for fetched knowledge text
 const kbCache = new Map(); // url -> text
 
 async function fetchKbText(urls = []) {
@@ -31,8 +40,7 @@ async function fetchKbText(urls = []) {
       const res = await fetch(url);
       if (!res.ok) continue;
       let txt = await res.text();
-      // cap any single file to ~10k chars
-      txt = txt.slice(0, 10000);
+      txt = txt.slice(0, 10000); // cap per file
       kbCache.set(url, txt);
       combined += '\n\n' + txt;
     } catch {}
@@ -40,7 +48,7 @@ async function fetchKbText(urls = []) {
   return combined.trim();
 }
 
-function buildInstructions(tenant, kbText) {
+function buildInstructions(tenant, kbText = '') {
   return `
 You are the voice receptionist for "${tenant.studio_name}".
 Style: Warm, professional, concise. Let callers interrupt naturally.
@@ -48,50 +56,26 @@ Booking: ${tenant.booking_url}
 Services: ${tenant.services.join(', ')}.
 Pricing notes: ${tenant.pricing_notes.join(' | ')}.
 Policies: ${tenant.policies.join(' | ')}.
+
 Use this knowledge when answering FAQs (preferred over generic answers):
 ${kbText || '(no additional text)'}
+
 Keep answers under 20 seconds. Offer to text the booking link if asked.
-Avoid medical advice; refer to a dermatologist when appropriate.`;
-}
-// Load env
-dotenv.config();
-const { OPENAI_API_KEY, NODE_ENV } = process.env;
-if (!OPENAI_API_KEY) {
-  console.error('Missing OpenAI API key. Set OPENAI_API_KEY in Render → Environment.');
-  process.exit(1);
+Avoid medical advice; recommend seeing a dermatologist when appropriate.`
+  .trim();
 }
 
-// Config
-const PORT = process.env.PORT || 5050; // Render injects PORT; 5050 is local fallback
-const VOICE = 'alloy';
-const SYSTEM_MESSAGE =
-  'You are a helpful and bubbly AI assistant who loves to chat about anything the user is interested in and is prepared to offer them facts. You have a penchant for dad jokes, owl jokes, and rickrolling—subtly. Always stay positive, but work in a joke when appropriate.';
-
-// Event types you might want to log from OpenAI
-const LOG_EVENT_TYPES = [
-  'error',
-  'response.content.done',
-  'rate_limits.updated',
-  'response.done',
-  'input_audio_buffer.committed',
-  'input_audio_buffer.speech_stopped',
-  'input_audio_buffer.speech_started',
-  'session.created',
-];
-
-// Fastify app (single server)
+// ---------- FASTIFY ----------
 const fastify = Fastify({ logger: true });
-
-// Plugins
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
-// Health (Render probes this)
+// Health check for Render
 fastify.get('/', async (_req, reply) => {
   reply.type('text/plain').send('OK');
 });
 
-// Twilio webhook → return TwiML that starts **bidirectional** Media Stream
+// Twilio webhook: start bidirectional media stream and pass tenant key
 fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
   const toNumber = (request.body?.To || '').trim();
@@ -111,183 +95,132 @@ fastify.all('/incoming-call', async (request, reply) => {
   reply.type('text/xml').send(twiml);
 });
 
-// WebSocket endpoint for Twilio Media Streams
+// Media Streams WebSocket endpoint
 fastify.register(async function (app) {
-  app.get('/media-stream', { websocket: true }, (connection /* WebSocket */, req) => {
+  app.get('/media-stream', { websocket: true }, (connection /* WS */, req) => {
     app.log.info('Twilio Media Stream connected');
 
-    // Per-connection state
-    let openAiReady = false;
-    let tenantReady = false;
-    let instructions = '';
+    // per-connection state
     let streamSid = null;
     let latestMediaTimestamp = 0;
     let lastAssistantItem = null;
     let markQueue = [];
     let responseStartTimestampTwilio = null;
 
-    // Connect to OpenAI Realtime API via WebSocket
+    let openAiReady = false;
+    let tenantReady = false;
+    let instructions = '';
+
+    // Connect to OpenAI Realtime API (WebSocket)
     const openAiWs = new WebSocket(
       'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01',
       {
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
-          'OpenAI-Beta': 'realtime=v1',
-        },
+          'OpenAI-Beta': 'realtime=v1'
+        }
       }
     );
-function maybeSendSessionUpdate() {
-  if (openAiReady && tenantReady) {
-    const sessionUpdate = {
-      type: 'session.update',
-      session: {
-        turn_detection: { type: 'server_vad' },
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        voice: VOICE,
-        instructions,
-        modalities: ['text','audio'],
-        temperature: 0.7
+
+    function maybeSendSessionUpdate() {
+      if (openAiReady && tenantReady) {
+        const sessionUpdate = {
+          type: 'session.update',
+          session: {
+            turn_detection: { type: 'server_vad' },
+            input_audio_format: 'g711_ulaw',
+            output_audio_format: 'g711_ulaw',
+            voice: VOICE,
+            instructions,
+            modalities: ['text','audio'],
+            temperature: 0.7
+          }
+        };
+        app.log.info('Sending session.update with tenant instructions');
+        openAiWs.send(JSON.stringify(sessionUpdate));
       }
-    };
-    openAiWs.send(JSON.stringify(sessionUpdate));
-  }
-      }
-    // Initialize OpenAI session
-    const initializeSession = () => {
-      const sessionUpdate = {
-        type: 'session.update',
-        session: {
-          turn_detection: { type: 'server_vad' },
-          input_audio_format: 'g711_ulaw',
-          output_audio_format: 'g711_ulaw',
-          voice: VOICE,
-          instructions: SYSTEM_MESSAGE,
-          modalities: ['text', 'audio'],
-          temperature: 0.8,
-        },
-      };
-      app.log.info({ sessionUpdate }, 'OpenAI session.update');
-      openAiWs.send(JSON.stringify(sessionUpdate));
-    };
+    }
 
-    // Send a "mark" to Twilio so we can detect playback boundaries
-    const sendMark = () => {
-      if (!streamSid) return;
-      const markEvent = { event: 'mark', streamSid, mark: { name: 'responsePart' } };
-      connection.send(JSON.stringify(markEvent));
-      markQueue.push('responsePart');
-    };
-
-    // If caller starts speaking, truncate assistant audio and clear Twilio buffer
-    const handleSpeechStartedEvent = () => {
-      if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
-        const elapsed = latestMediaTimestamp - responseStartTimestampTwilio;
-
-        if (lastAssistantItem) {
-          const truncateEvent = {
-            type: 'conversation.item.truncate',
-            item_id: lastAssistantItem,
-            content_index: 0,
-            audio_end_ms: elapsed,
-          };
-          openAiWs.send(JSON.stringify(truncateEvent));
-        }
-
-        // Tell Twilio to clear buffered audio
-        connection.send(JSON.stringify({ event: 'clear', streamSid }));
-
-        // Reset
-        markQueue = [];
-        lastAssistantItem = null;
-        responseStartTimestampTwilio = null;
-      }
-    };
-
-    // --- OpenAI WS handlers ---
+    // ---- OpenAI WS handlers ----
     openAiWs.on('open', () => {
-      app.log.info('Connected to OpenAI Realtime API');
-      setTimeout(initializeSession, 100);
-      openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate();
+      openAiReady = true;
+      maybeSendSessionUpdate();
     });
 
     openAiWs.on('message', (buf) => {
       let msg;
-      try {
-        msg = JSON.parse(buf.toString());
-      } catch (e) {
-        app.log.error({ e, raw: buf.toString() }, 'OpenAI message parse error');
-        return;
-      }
+      try { msg = JSON.parse(buf.toString()); } catch { return; }
 
-      if (LOG_EVENT_TYPES.includes(msg.type)) {
-        app.log.info({ type: msg.type }, 'OpenAI event');
-      }
+      if (msg.type === 'response.audio.delta' && msg.delta && streamSid) {
+        // audio back to Twilio
+        connection.send(JSON.stringify({
+          event: 'media',
+          streamSid,
+          media: { payload: msg.delta } // base64 g711_ulaw
+        }));
 
-      if (msg.type === 'response.audio.delta' && msg.delta) {
-        // Stream audio back to Twilio
-        if (streamSid) {
-          const audioDelta = {
-            event: 'media',
-            streamSid,
-            media: { payload: msg.delta }, // base64 g711_ulaw
-          };
-          connection.send(JSON.stringify(audioDelta));
-
-          if (!responseStartTimestampTwilio) {
-            responseStartTimestampTwilio = latestMediaTimestamp;
-          }
-          if (msg.item_id) lastAssistantItem = msg.item_id;
-          sendMark();
+        if (!responseStartTimestampTwilio) {
+          responseStartTimestampTwilio = latestMediaTimestamp;
         }
+        if (msg.item_id) lastAssistantItem = msg.item_id;
+
+        // optional mark for playback boundary
+        connection.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'responsePart' } }));
+        markQueue.push('responsePart');
       }
 
       if (msg.type === 'input_audio_buffer.speech_started') {
-        handleSpeechStartedEvent();
+        // truncate assistant audio if caller starts talking
+        if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
+          if (lastAssistantItem) {
+            openAiWs.send(JSON.stringify({
+              type: 'conversation.item.truncate',
+              item_id: lastAssistantItem,
+              content_index: 0,
+              audio_end_ms: latestMediaTimestamp - responseStartTimestampTwilio
+            }));
+          }
+          connection.send(JSON.stringify({ event: 'clear', streamSid }));
+          markQueue = []; lastAssistantItem = null; responseStartTimestampTwilio = null;
+        }
       }
     });
 
-    openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
     openAiWs.on('error', (err) => app.log.error({ err }, 'OpenAI WS error'));
+    openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
 
-    // --- Twilio Media Streams → ingest audio/events ---
-    connection.on('message', (raw) => {
+    // ---- Twilio → events/audio ----
+    connection.on('message', async (raw) => {
       let data;
-      try {
-        data = JSON.parse(raw);
-      } catch (e) {
-        app.log.error({ e, raw: raw.toString() }, 'Twilio message parse error');
-        return;
-      }
+      try { data = JSON.parse(raw); } catch { return; }
 
       switch (data.event) {
         case 'start': {
-  streamSid = data.start?.streamSid;
-  latestMediaTimestamp = 0;
-  responseStartTimestampTwilio = null;
+          streamSid = data.start?.streamSid;
+          latestMediaTimestamp = 0;
+          responseStartTimestampTwilio = null;
 
-  const tenantKey = decodeURIComponent(data.start?.customParameters?.tenant || '');
-  const tenant = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
+          // resolve tenant from customParameters set in TwiML
+          const tenantKey = decodeURIComponent(data.start?.customParameters?.tenant || '');
+          const tenant = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
 
-  let kbText = '';
-  if (tenant?.faq_urls?.length) {
-    kbText = await fetchKbText(tenant.faq_urls);
-  }
-  instructions = tenant ? buildInstructions(tenant, kbText) : 'You are a helpful salon receptionist.';
-  tenantReady = true;
-  maybeSendSessionUpdate();
-  break;
-}
+          let kbText = '';
+          if (tenant?.faq_urls?.length) {
+            kbText = await fetchKbText(tenant.faq_urls);
+          }
+          instructions = tenant ? buildInstructions(tenant, kbText) : 'You are a helpful salon receptionist.';
+          tenantReady = true;
+          maybeSendSessionUpdate();
+          break;
+        }
 
         case 'media':
           latestMediaTimestamp = data.media?.timestamp ?? latestMediaTimestamp;
           if (openAiWs.readyState === WebSocket.OPEN) {
-            openAiWs.send(
-              JSON.stringify({
-                type: 'input_audio_buffer.append',
-                audio: data.media?.payload, // base64 g711_ulaw
-              })
-            );
+            openAiWs.send(JSON.stringify({
+              type: 'input_audio_buffer.append',
+              audio: data.media?.payload // base64 g711_ulaw
+            }));
           }
           break;
 
@@ -311,29 +244,11 @@ function maybeSendSessionUpdate() {
   });
 });
 
-// Start server (Render needs 0.0.0.0)
-const start = async () => {
-  try {
-    await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`Server is listening on port ${PORT} (${NODE_ENV || 'dev'})`);
-  } catch (err) {
-    fastify.log.error(err);
-    process.exit(1);
-  }
-};
-start();
-
-const VOICE = 'alloy'; // keep or switch later
-const SYSTEM_MESSAGE = `
-You are the voice receptionist for "Loc Repair Clinic at U Natural Hair" in Southfield, MI.
-Style: Warm, professional, concise. Let callers interrupt naturally.
-Hours: Tue–Sat 10am–6pm Eastern.
-Services you can describe briefly: Crochet Loc Repair, Interlock Maintenance, Bald Coverage System.
-Pricing notes: Interlock maintenance $95 (2–3 turns), $125 (4–6 turns). Consult deposit applies to service if booked within 14 days.
-Booking link: https://calendly.com/your-studio/consult
-Transfer-to-human: If the caller asks to speak to someone, say you can connect them and follow the transfer instructions.
-Policies: 24h reschedule; deposits non-refundable; parking in rear lot (enter Suite 9).
-Never give medical advice; if asked, recommend seeing a dermatologist.
-Keep answers <20 seconds when possible; offer to text booking link if asked.`;
-
-
+// ---------- START ----------
+try {
+  await fastify.listen({ port: PORT, host: '0.0.0.0' });
+  fastify.log.info(`Server is listening on port ${PORT} (${NODE_ENV || 'dev'})`);
+} catch (err) {
+  fastify.log.error(err);
+  process.exit(1);
+                                }
