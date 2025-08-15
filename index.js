@@ -117,6 +117,9 @@ fastify.register(async function (app) {
     app.log.info('Twilio Media Stream connected');
 
     // Per-connection state
+    let openAiReady = false;
+    let tenantReady = false;
+    let instructions = '';
     let streamSid = null;
     let latestMediaTimestamp = 0;
     let lastAssistantItem = null;
