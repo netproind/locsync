@@ -136,7 +136,23 @@ fastify.register(async function (app) {
         },
       }
     );
-
+function maybeSendSessionUpdate() {
+  if (openAiReady && tenantReady) {
+    const sessionUpdate = {
+      type: 'session.update',
+      session: {
+        turn_detection: { type: 'server_vad' },
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
+        voice: VOICE,
+        instructions,
+        modalities: ['text','audio'],
+        temperature: 0.7
+      }
+    };
+    openAiWs.send(JSON.stringify(sessionUpdate));
+  }
+      }
     // Initialize OpenAI session
     const initializeSession = () => {
       const sessionUpdate = {
