@@ -8,13 +8,18 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
-OVERRIDES = OVERRIDES.filter(o => o && typeof o.match === 'string' && typeof o.reply === 'string');
-
+// ---------- OVERRIDES ----------
 let OVERRIDES = [];
 try {
   const rawOv = await fs.readFile(new URL('./overrides.json', import.meta.url));
   OVERRIDES = JSON.parse(String(rawOv));
-} catch { OVERRIDES = []; }
+} catch {
+  OVERRIDES = [];
+}
+// Validate AFTER loading
+OVERRIDES = Array.isArray(OVERRIDES)
+  ? OVERRIDES.filter(o => o && typeof o.match === 'string' && typeof o.reply === 'string')
+  : [];
 
 // ---------- ENV ----------
 dotenv.config();
