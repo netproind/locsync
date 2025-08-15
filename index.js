@@ -29,6 +29,17 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
+// ---------- DEFAULTS ----------
+const DEFAULTS = {
+  voice: 'alloy',
+  model: 'gpt-4o-realtime-preview-2024-10-01',
+  temperature: 0.7,
+  modalities: ['text', 'audio'],
+  turn_detection: { type: 'server_vad' },
+  kb_per_file_char_cap: 10000,
+  instructions_char_cap: 24000,
+  greeting_tts: null
+};
 // ---------- CONFIG ----------
 const PORT = process.env.PORT || 5050;   // Render injects PORT
 const VOICE = 'alloy';
