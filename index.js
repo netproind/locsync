@@ -83,7 +83,7 @@ fastify.all('/incoming-call', async (request, reply) => {
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting you to our A.I. receptionist.</Say>
+  <Say>Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting you to our expert Loc Assistant.</Say>
   <Pause length="1"/>
   <Connect>
     <Stream url="wss://${host}/media-stream">
@@ -124,23 +124,21 @@ fastify.register(async function (app) {
     );
 
     function maybeSendSessionUpdate() {
-      if (openAiReady && tenantReady) {
-        // after you've loaded `tenant` and built `instructions`
-const chosenVoice = tenant?.voice || VOICE;       // default VOICE is your global fallback
-const sessionUpdate = {
-  type: 'session.update',
-  session: {
-    turn_detection: { type: 'server_vad' },
-    input_audio_format: 'g711_ulaw',
-    output_audio_format: 'g711_ulaw',             // keep audio out from OpenAI for the fastest path
-    voice: chosenVoice,
-    instructions,                                  // see #3 below to add voice_style to instructions
-    modalities: ['text', 'audio'],
-    temperature: 0.7
-  }
-};
-openAiWs.send(JSON.stringify(sessionUpdate));
+  if (openAiReady && tenantReady) {
+    const sessionUpdate = {
+      type: 'session.update',
+      session: {
+        turn_detection: { type: 'server_vad' },
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
+        voice: chosenVoice,
+        instructions,
+        modalities: ['text', 'audio'],
+        temperature: 0.7
       }
+    };
+    openAiWs.send(JSON.stringify(sessionUpdate));
+  }
     }
 
     // ---- OpenAI WS handlers ----
@@ -255,4 +253,4 @@ try {
 } catch (err) {
   fastify.log.error(err);
   process.exit(1);
-                                }
+}
