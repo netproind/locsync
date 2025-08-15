@@ -208,6 +208,7 @@ function maybeSendSessionUpdate() {
     openAiWs.on('open', () => {
       app.log.info('Connected to OpenAI Realtime API');
       setTimeout(initializeSession, 100);
+      openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate();
     });
 
     openAiWs.on('message', (buf) => {
