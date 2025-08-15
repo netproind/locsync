@@ -124,20 +124,21 @@ fastify.register(async function (app) {
 
     function maybeSendSessionUpdate() {
       if (openAiReady && tenantReady) {
-        const sessionUpdate = {
-          type: 'session.update',
-          session: {
-            turn_detection: { type: 'server_vad' },
-            input_audio_format: 'g711_ulaw',
-            output_audio_format: 'g711_ulaw',
-            voice: VOICE,
-            instructions,
-            modalities: ['text','audio'],
-            temperature: 0.7
-          }
-        };
-        app.log.info('Sending session.update with tenant instructions');
-        openAiWs.send(JSON.stringify(sessionUpdate));
+        // after you've loaded `tenant` and built `instructions`
+const chosenVoice = tenant?.voice || VOICE;       // default VOICE is your global fallback
+const sessionUpdate = {
+  type: 'session.update',
+  session: {
+    turn_detection: { type: 'server_vad' },
+    input_audio_format: 'g711_ulaw',
+    output_audio_format: 'g711_ulaw',             // keep audio out from OpenAI for the fastest path
+    voice: chosenVoice,
+    instructions,                                  // see #3 below to add voice_style to instructions
+    modalities: ['text', 'audio'],
+    temperature: 0.7
+  }
+};
+openAiWs.send(JSON.stringify(sessionUpdate));
       }
     }
 
