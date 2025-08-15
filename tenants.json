@@ -1,25 +1,18 @@
 {
   "+13134555627": {
     "tenant_id": "yesha_locsync_v1",
-    "studio_name": "Loc Repair Clinic at U Natural Hair Dreadlock Services",
+    "studio_name": "Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
-    "hours": { "open_days": [1,2,3,4,5,6], "open_hour": 0, "close_hour": 24 },
-    "booking_url": "https://locrepair.com/service_portal",
-    "transfer_number": "",
-    "policies": [
-      "Quotes required before booking; deposit goes toward service within 14 days",
-      "Cancellations: see terms page"
-    ],
-    "pricing_notes": [
-      "Interlock maintenance: $95 (2–3 turns), $125 (4–6 turns)"
-    ],
-    "services": [
-      "Crochet Loc Repair","Interlock Maintenance","Bald Coverage System",
-      "Retwists","Loc Extensions","Repairs","Combining Locs","Sisterlock Retightening",
-      "Instant Locs","Wick Maintenance","Detox","Dandruff Removal"
-    ],
-    "faq_urls": [
-      "https://raw.githubusercontent.com/NETPROIND/locsync/main/knowledge.md"
-    ]
+    "hours": { "open_days": [1,2,3,4,5,6], "open_hour": 11, "close_hour": 20 },
+
+    "voice_provider": "openai",      // "openai" or "external"
+    "voice": "alloy",                // OpenAI realtime voice name
+    "voice_style": "warm, Detroit-local, confident; clear enunciation; natural code-switching when caller uses AAVE; friendly but efficient",
+
+    "booking_url": "https://your-booking-link",
+    "services": ["Crochet Repair", "Interlock Maintenance", "Bald Coverage System"],
+    "pricing_notes": ["Interlock $95 (2–3 turns), $125 (4–6 turns)"],
+    "policies": ["24h reschedule", "Deposits non-refundable"],
+    "faq_urls": ["https://raw.githubusercontent.com/you/yourrepo/main/knowledge/yesha-faqs.md"]
   }
-}
+  }
