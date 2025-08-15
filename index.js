@@ -94,12 +94,17 @@ fastify.get('/', async (_req, reply) => {
 // Twilio webhook → return TwiML that starts **bidirectional** Media Stream
 fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
+  const toNumber = (request.body?.To || '').trim();
+  const tenant = TENANTS[toNumber] || Object.values(TENANTS)[0];
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Welcome to the Loc Repair Clinic in Southfield, Michigan. We specialize in crochet repair, interlock maintenance, and bald spot coverage. Please hold while our virtual receptionist assists you.</Say>
+  <Say>Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting you to our A.I. receptionist.</Say>
   <Pause length="1"/>
   <Connect>
-    <Stream url="wss://${host}/media-stream" />
+    <Stream url="wss://${host}/media-stream">
+      <Parameter name="tenant" value="${encodeURIComponent(toNumber)}"/>
+    </Stream>
   </Connect>
 </Response>`.trim();
 
