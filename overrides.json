@@ -1,0 +1,4 @@
+[
+  { "match": "(?i)walk[- ]?ins?", "reply": "We serve by appointment only. I can text you the booking link—would you like that?" },
+  { "match": "(?i)(medical|scalp condition|dermatitis|alopecia)", "reply": "I can’t provide medical advice. A dermatologist is best for medical questions; I can help you book a consult for hair care options." }
+]
