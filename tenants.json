@@ -3,21 +3,39 @@
     "tenant_id": "yesha_locsync_v1",
     "studio_name": "Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
-    "hours": { "open_days": [1,2,3,4,5,6], "open_hour": 11, "close_hour": 20 },
+    "hours": { "open_days": [1, 2, 3, 4, 5, 6], "open_hour": 11, "close_hour": 20 },
 
-    "voice_provider": "openai",      // "openai" or "external"
-    "voice": "alloy",                // OpenAI realtime voice name
+    "voice_provider": "openai",
+    "voice": "alloy",
     "voice_style": "warm, Detroit-local, confident; clear enunciation; natural code-switching when caller uses AAVE; friendly but efficient",
+
+    "model": "gpt-4o-realtime-preview-2024-10-01",
+    "temperature": 0.7,
+    "modalities": ["text", "audio"],
+    "turn_detection": { "type": "server_vad" },
+
+    "greeting_tts": "Thanks for calling Loc Repair Clinic at U Natural Hair. Connecting you to our expert Loc Assistant.",
+
+    "kb_per_file_char_cap": 10000,
+    "instructions_char_cap": 24000,
 
     "booking_url": "https://www.locrepair.com/service_portal",
     "services": ["Crochet Repair", "Interlock Maintenance", "Bald Coverage System"],
     "pricing_notes": ["Interlock $95 (2–3 turns), $125 (4–6 turns)"],
     "policies": ["24h reschedule", "Deposits non-refundable"],
-    "faq_urls": ["https://raw.githubusercontent.com/you/yourrepo/main/knowledge/yesha-faqs.md"]
+
+    "faq_urls": [
+      "https://raw.githubusercontent.com/you/yourrepo/main/knowledge/yesha-faqs.md"
+    ],
+
     "canonical_answers": [
-  { "q": "Do you take walk-ins?", "a": "We serve by appointment only. I can text you the booking link—would you like that?" },
-  { "q": "How much is interlock maintenance?", "a": "Interlock maintenance is $95 for 2–3 turns, or $125 for 4–6 turns. A consult deposit goes toward your service if booked within 14 days." },
-  { "q": "Where are you located?", "a": "We’re at U Natural Hair in Southfield, MI. Parking is in the rear lot; enter Suite 9." }
+      { "q": "Do you take walk-ins?", "a": "We serve by appointment only. I can text you the booking link—would you like that?" },
+      { "q": "How much is interlock maintenance?", "a": "Interlock maintenance is $95 for 2–3 turns, or $125 for 4–6 turns. A consult deposit goes toward your service if booked within 14 days." },
+      { "q": "Where are you located?", "a": "We’re at U Natural Hair in Southfield, MI. Parking is in the rear lot; enter Suite 9." }
+    ],
+
+    "overrides": [
+      { "match": "\\bwalk[- ]?in(s)?\\b", "reply": "We’re appointment-only, but I can text you the booking link right now." }
     ]
   }
-  }
+}
