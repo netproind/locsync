@@ -9,7 +9,7 @@
     "voice": "alloy",                // OpenAI realtime voice name
     "voice_style": "warm, Detroit-local, confident; clear enunciation; natural code-switching when caller uses AAVE; friendly but efficient",
 
-    "booking_url": "https://your-booking-link",
+    "booking_url": "https://www.locrepair.com/service_portal",
     "services": ["Crochet Repair", "Interlock Maintenance", "Bald Coverage System"],
     "pricing_notes": ["Interlock $95 (2–3 turns), $125 (4–6 turns)"],
     "policies": ["24h reschedule", "Deposits non-refundable"],
