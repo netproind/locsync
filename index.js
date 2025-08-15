@@ -9,12 +9,14 @@ import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
 // ---------- OVERRIDES ----------
-let OVERRIDES = [];
-try {
-  const rawOv = await fs.readFile(new URL('./overrides.json', import.meta.url));
-  OVERRIDES = JSON.parse(String(rawOv));
-} catch {
-  OVERRIDES = [];
+const tenantOverrides = Array.isArray(tenantRef?.overrides) ? tenantRef.overrides : [];
+const allOverrides = [...OVERRIDES, ...tenantOverrides];
+
+if (allOverrides.length && !instructions.includes('HARD OVERRIDES (highest priority):')) {
+  const hard = allOverrides
+    .map(o => `IF the user utterance matches /${o.match}/ THEN reply exactly: "${o.reply}"`)
+    .join('\n');
+  instructions += `\n\nHARD OVERRIDES (highest priority):\n${hard}`;
 }
 // Validate AFTER loading
 OVERRIDES = Array.isArray(OVERRIDES)
