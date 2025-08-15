@@ -49,20 +49,20 @@ async function fetchKbText(urls = []) {
 }
 
 function buildInstructions(tenant, kbText = '') {
+  const style = tenant.voice_style || 'warm, professional, concise';
   return `
 You are the voice receptionist for "${tenant.studio_name}".
-Style: Warm, professional, concise. Let callers interrupt naturally.
+Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 seconds.
 Booking: ${tenant.booking_url}
 Services: ${tenant.services.join(', ')}.
 Pricing notes: ${tenant.pricing_notes.join(' | ')}.
 Policies: ${tenant.policies.join(' | ')}.
 
-Use this knowledge when answering FAQs (preferred over generic answers):
+Use this knowledge when answering FAQs (prefer this over generic answers):
 ${kbText || '(no additional text)'}
 
-Keep answers under 20 seconds. Offer to text the booking link if asked.
-Avoid medical advice; recommend seeing a dermatologist when appropriate.`
-  .trim();
+If asked for medical advice, recommend seeing a dermatologist.
+Offer to text the booking link if helpful.`.trim();
 }
 
 // ---------- FASTIFY ----------
@@ -110,6 +110,7 @@ fastify.register(async function (app) {
     let openAiReady = false;
     let tenantReady = false;
     let instructions = '';
+    let chosenVoice = VOICE;   // default; will be overwritten per tenant on 'start'
 
     // Connect to OpenAI Realtime API (WebSocket)
     const openAiWs = new WebSocket(
@@ -197,24 +198,26 @@ openAiWs.send(JSON.stringify(sessionUpdate));
 
       switch (data.event) {
         case 'start': {
-          streamSid = data.start?.streamSid;
-          latestMediaTimestamp = 0;
-          responseStartTimestampTwilio = null;
+  streamSid = data.start?.streamSid;
+  latestMediaTimestamp = 0;
+  responseStartTimestampTwilio = null;
 
-          // resolve tenant from customParameters set in TwiML
-          const tenantKey = decodeURIComponent(data.start?.customParameters?.tenant || '');
-          const tenant = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
+  const tenantKey = decodeURIComponent(data.start?.customParameters?.tenant || '');
+  const tenant = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
 
-          let kbText = '';
-          if (tenant?.faq_urls?.length) {
-            kbText = await fetchKbText(tenant.faq_urls);
-          }
-          instructions = tenant ? buildInstructions(tenant, kbText) : 'You are a helpful salon receptionist.';
-          tenantReady = true;
-          maybeSendSessionUpdate();
-          break;
-        }
+  // choose voice per tenant
+  chosenVoice = tenant?.voice || VOICE;
 
+  // load KB and build instructions (now includes voice_style)
+  let kbText = '';
+  if (tenant?.faq_urls?.length) {
+    kbText = await fetchKbText(tenant.faq_urls);
+  }
+  instructions = tenant ? buildInstructions(tenant, kbText) : 'You are a helpful salon receptionist.';
+  tenantReady = true;
+  maybeSendSessionUpdate();
+  break;
+}
         case 'media':
           latestMediaTimestamp = data.media?.timestamp ?? latestMediaTimestamp;
           if (openAiWs.readyState === WebSocket.OPEN) {
