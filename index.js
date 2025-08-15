@@ -63,6 +63,9 @@ async function fetchKbText(urls = []) {
 
 function buildInstructions(tenant, kbText = '') {
   const style = tenant.voice_style || 'warm, professional, concise';
+  const services = Array.isArray(tenant?.services) ? tenant.services : [];
+  const pricing  = Array.isArray(tenant?.pricing_notes) ? tenant.pricing_notes : [];
+  const policies = Array.isArray(tenant?.policies) ? tenant.policies : [];
   return `
 You are the voice receptionist for "${tenant.studio_name}".
 Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 seconds.
@@ -78,13 +81,13 @@ BOOKING
 - Offer to text the booking link when helpful.
 
 SERVICES
-- ${tenant.services.join(', ')}
+- ${services.join(', ')}
 
 PRICING NOTES
-- ${tenant.pricing_notes.join(' | ')}
+- ${pricing.join(' | ')}
 
 POLICIES
-- ${tenant.policies.join(' | ')}
+- ${policies.join(' | ')}
 
 CANONICAL Q&A (authoritative; use verbatim where applicable):
 ${(tenant.canonical_answers || []).map((item, i) =>
