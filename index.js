@@ -177,7 +177,10 @@ fastify.register(async function (app) {
     openAiWs.on('message', (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
-
+if (msg.type === 'response.content.done') {
+  const txt = (msg?.output_text || '').slice(0, 400);
+  fastify.log.info({ preview: txt }, 'AI final text');
+}
       if (msg.type === 'response.audio.delta' && msg.delta && streamSid) {
         // audio back to Twilio
         connection.send(JSON.stringify({
@@ -246,6 +249,11 @@ fastify.register(async function (app) {
         case 'media':
           latestMediaTimestamp = data.media?.timestamp ?? latestMediaTimestamp;
           if (openAiWs.readyState === WebSocket.OPEN) {
+            // Bake hard overrides into the instructions as “if user asks … reply exactly …”
+if (OVERRIDES.length) {
+  const hard = OVERRIDES.map(o => `IF the user utterance matches /${o.match}/ THEN reply exactly: "${o.reply}"`).join('\n');
+  instructions += `\n\nHARD OVERRIDES (highest priority):\n${hard}`;
+}
             openAiWs.send(JSON.stringify({
               type: 'input_audio_buffer.append',
               audio: data.media?.payload // base64 g711_ulaw
