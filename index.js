@@ -261,12 +261,23 @@ function maybeSendSessionUpdate() {
       }
 
       switch (data.event) {
-        case 'start':
-          streamSid = data.start?.streamSid;
-          latestMediaTimestamp = 0;
-          responseStartTimestampTwilio = null;
-          app.log.info({ streamSid }, 'Media stream started');
-          break;
+        case 'start': {
+  streamSid = data.start?.streamSid;
+  latestMediaTimestamp = 0;
+  responseStartTimestampTwilio = null;
+
+  const tenantKey = decodeURIComponent(data.start?.customParameters?.tenant || '');
+  const tenant = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
+
+  let kbText = '';
+  if (tenant?.faq_urls?.length) {
+    kbText = await fetchKbText(tenant.faq_urls);
+  }
+  instructions = tenant ? buildInstructions(tenant, kbText) : 'You are a helpful salon receptionist.';
+  tenantReady = true;
+  maybeSendSessionUpdate();
+  break;
+}
 
         case 'media':
           latestMediaTimestamp = data.media?.timestamp ?? latestMediaTimestamp;
