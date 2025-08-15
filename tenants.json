@@ -14,5 +14,10 @@
     "pricing_notes": ["Interlock $95 (2–3 turns), $125 (4–6 turns)"],
     "policies": ["24h reschedule", "Deposits non-refundable"],
     "faq_urls": ["https://raw.githubusercontent.com/you/yourrepo/main/knowledge/yesha-faqs.md"]
+    "canonical_answers": [
+  { "q": "Do you take walk-ins?", "a": "We serve by appointment only. I can text you the booking link—would you like that?" },
+  { "q": "How much is interlock maintenance?", "a": "Interlock maintenance is $95 for 2–3 turns, or $125 for 4–6 turns. A consult deposit goes toward your service if booked within 14 days." },
+  { "q": "Where are you located?", "a": "We’re at U Natural Hair in Southfield, MI. Parking is in the rear lot; enter Suite 9." }
+    ]
   }
   }
