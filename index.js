@@ -8,6 +8,8 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
+OVERRIDES = OVERRIDES.filter(o => o && typeof o.match === 'string' && typeof o.reply === 'string');
+
 let OVERRIDES = [];
 try {
   const rawOv = await fs.readFile(new URL('./overrides.json', import.meta.url));
@@ -152,6 +154,14 @@ fastify.register(async function (app) {
 
     function maybeSendSessionUpdate() {
   if (openAiReady && tenantReady) {
+    // Bake hard overrides into the instructions ONCE
+    if (OVERRIDES.length && !instructions.includes('HARD OVERRIDES (highest priority):')) {
+      const hard = OVERRIDES
+        .map(o => `IF the user utterance matches /${o.match}/ THEN reply exactly: "${o.reply}"`)
+        .join('\n');
+      instructions += `\n\nHARD OVERRIDES (highest priority):\n${hard}`;
+    }
+
     const sessionUpdate = {
       type: 'session.update',
       session: {
@@ -166,7 +176,7 @@ fastify.register(async function (app) {
     };
     openAiWs.send(JSON.stringify(sessionUpdate));
   }
-    }
+}
 
     // ---- OpenAI WS handlers ----
     openAiWs.on('open', () => {
@@ -242,6 +252,7 @@ if (msg.type === 'response.content.done') {
     kbText = await fetchKbText(tenant.faq_urls);
   }
   instructions = tenant ? buildInstructions(tenant, kbText) : 'You are a helpful salon receptionist.';
+       if (instructions.length > 24000) instructions = instructions.slice(0, 24000);   
   tenantReady = true;
   maybeSendSessionUpdate();
   break;
@@ -250,10 +261,7 @@ if (msg.type === 'response.content.done') {
           latestMediaTimestamp = data.media?.timestamp ?? latestMediaTimestamp;
           if (openAiWs.readyState === WebSocket.OPEN) {
             // Bake hard overrides into the instructions as “if user asks … reply exactly …”
-if (OVERRIDES.length) {
-  const hard = OVERRIDES.map(o => `IF the user utterance matches /${o.match}/ THEN reply exactly: "${o.reply}"`).join('\n');
-  instructions += `\n\nHARD OVERRIDES (highest priority):\n${hard}`;
-}
+
             openAiWs.send(JSON.stringify({
               type: 'input_audio_buffer.append',
               audio: data.media?.payload // base64 g711_ulaw
