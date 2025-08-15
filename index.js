@@ -8,6 +8,12 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
+let OVERRIDES = [];
+try {
+  const rawOv = await fs.readFile(new URL('./overrides.json', import.meta.url));
+  OVERRIDES = JSON.parse(String(rawOv));
+} catch { OVERRIDES = []; }
+
 // ---------- ENV ----------
 dotenv.config();
 const { OPENAI_API_KEY, NODE_ENV } = process.env;
