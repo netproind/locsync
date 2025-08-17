@@ -61,15 +61,20 @@ async function fetchKbText(urls = []) {
   let combined = '';
   for (const url of urls) {
     try {
-      if (kbCache.has(url)) { combined += '\n\n' + kbCache.get(url); continue; }
+      if (kbCache.has(url)) {
+        combined += '\n\n' + kbCache.get(url);
+        continue;
+      }
       const res = await fetch(url);
       if (!res.ok) continue;
       let txt = await res.text();
       const cap = currentKbCap || DEFAULTS.kb_per_file_char_cap;
-      txt = txt.slice(0, cap);
+      txt = txt.slice(0, cap); // per-file cap
       kbCache.set(url, txt);
       combined += '\n\n' + txt;
-    } catch {}
+    } catch {
+      // ignore single-file failures
+    }
   }
   return combined.trim();
 }
