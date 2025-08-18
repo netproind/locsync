@@ -3,7 +3,7 @@
     "tenant_id": "yesha_locsync_v1",
     "studio_name": "Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
-    "hours": { "open_days": [1, 2, 3, 4, 5, 6], "open_hour": 11, "close_hour": 20 },
+    "hours": { "open_days": [0, 1, 2, 3, 4, 5], "open_hour": 11, "close_hour": 19 },
 
     "voice_provider": "openai",
     "voice": "alloy",
@@ -14,14 +14,14 @@
     "modalities": ["text", "audio"],
     "turn_detection": { "type": "server_vad" },
 
-    "greeting_tts": "Thanks for calling Loc Repair Clinic at U Natural Hair. Connecting you to our expert Loc Assistant.",
+    "greeting_tts": "Thanks for calling the Loc Repair Clinic. Connecting you to speak now.",
 
     "kb_per_file_char_cap": 10000,
     "instructions_char_cap": 24000,
 
     "booking_url": "https://www.locrepair.com/service_portal",
     "services": ["Crochet Repair", "Interlock Maintenance", "Bald Coverage System"],
-    "pricing_notes": ["Interlock $95 (2–3 turns), $125 (4–6 turns)"],
+    "pricing_notes": ["Interlock starts at $95 for 2–3 turns, $135 for 4–6 turns"],
     "policies": ["24h reschedule", "Deposits non-refundable"],
 
     "faq_urls": [
