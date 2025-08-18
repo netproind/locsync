@@ -144,7 +144,7 @@ fastify.all('/incoming-call', async (request, reply) => {
   const tenant = TENANTS[toNumber] || Object.values(TENANTS)[0] || null;
 
   const greeting = tenant?.greeting_tts
-    || `Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting you to our expert Loc Assistant.`;
+    || `Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting...begin speaking now`;
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
