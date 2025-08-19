@@ -73,4 +73,48 @@ export async function searchAvailability({
           serviceVariationId,
           teamMemberIdFilter: { any: [teamMemberId] }
         }],
-        startAtRange: { startAt, endAt
+        startAtRange: { startAt, endAt }
+      }
+    }
+  });
+  return result?.availabilities || [];
+}
+
+export async function createBooking({
+  locationId,
+  teamMemberId,
+  customerId,
+  serviceVariationId,
+  startAt,
+  sellerNote
+}) {
+  // Required by CreateBooking: service_variation_version must be supplied. 1
+  const serviceVariationVersion = await getServiceVariationVersion(serviceVariationId);
+  if (serviceVariationVersion == null) {
+    throw new Error('Could not resolve service_variation_version for the chosen service.');
+  }
+
+  const body = {
+    booking: {
+      locationId,
+      startAt,
+      customerId,
+      appointmentSegments: [{
+        // Omit durationMinutes: Square uses the service variation’s configured duration.
+        serviceVariationId,
+        serviceVariationVersion,
+        teamMemberId
+      }],
+      sellerNote
+    },
+    idempotencyKey: randomUUID()
+  };
+
+  const { result } = await bookingsApi.createBooking(body);
+  return result.booking;
+}
+
+export async function cancelBooking({ bookingId, version }) {
+  const { result } = await bookingsApi.cancelBooking(bookingId, { version });
+  return result.booking;
+}
