@@ -1,4 +1,4 @@
-// index.js (ESM) — Fastify + Twilio Media Streams + OpenAI Realtime
+// index.js (ESM) — Fastify + Twilio Media Streams + OpenAI Realtime + Square tools
 // package.json must have: "type": "module"
 
 import Fastify from 'fastify';
@@ -7,11 +7,13 @@ import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
+
 import {
   searchAvailability,
   createBooking,
   ensureCustomerByPhoneOrEmail,
-  findServiceVariationIdByName
+  findServiceVariationIdByName,
+  locationsApi
 } from './square.js';
 
 // ---------- ENV ----------
@@ -117,7 +119,8 @@ GROUNDING & SOURCES
 
 BOOKING
 - Booking link: ${booking}
-- Offer to text the booking link when helpful.
+- For availability and booking, use the Square tools; do not guess times.
+- If the caller gives a day/time window, first call square_search_availability, then offer 2–3 nearest slots; after they pick, call square_create_booking.
 
 SERVICES
 - ${services.join(', ')}
@@ -148,6 +151,19 @@ fastify.register(fastifyWs);
 // Health check for Render
 fastify.get('/', async (_req, reply) => {
   reply.type('text/plain').send('OK');
+});
+
+// Dev: Square sanity ping
+fastify.get('/dev/square/ping', async (_req, reply) => {
+  try {
+    const res = await locationsApi.listLocations();
+    reply.send({
+      ok: true,
+      locations: (res?.result?.locations || []).map(l => ({ id: l.id, name: l.name }))
+    });
+  } catch (e) {
+    reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
 });
 
 // Twilio webhook: start bidirectional media stream and pass tenant key
@@ -222,41 +238,39 @@ fastify.register(async function (app) {
           instructions,
           modalities: selectedMods,
           temperature: selectedTemp,
-
-          // NEW: tools the model may call
-    tools: [
-      {
-        type: 'function',
-        name: 'square_search_availability',
-        description: 'Searchs open appointment slots for a given service and date range.',
-        parameters: {
-          type: 'object',
-          properties: {
-            serviceName: { type: 'string', description: 'Human-friendly service name, e.g. "Interlock 2-3 turns". If missing, the default service variation env var will be used.' },
-            startAt: { type: 'string', description: 'ISO 8601 start datetime, e.g. 2025-08-20T15:00:00-04:00' },
-            endAt: { type: 'string', description: 'ISO 8601 end datetime, window to search' }
-          },
-          required: ['startAt', 'endAt']
-        }
-      },
-      {
-        type: 'function',
-        name: 'square_create_booking',
-        description: 'Creates a booking for the selected slot and caller.',
-        parameters: {
-          type: 'object',
-          properties: {
-            startAt: { type: 'string', description: 'Chosen start datetime in ISO 8601' },
-            serviceName: { type: 'string', description: 'Service name; used to look up the service variation ID if needed' },
-            customerGivenName: { type: 'string' },
-            customerPhone: { type: 'string' },
-            customerEmail: { type: 'string' },
-            note: { type: 'string' }
-          },
-          required: ['startAt']
-        }
-      }
-    ]
+          tools: [
+            {
+              type: 'function',
+              name: 'square_search_availability',
+              description: 'Searches open appointment slots for a given service and date range.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  serviceName: { type: 'string', description: 'Human-friendly service name, e.g. "Interlock 2-3 turns". If missing, the default service variation env var will be used.' },
+                  startAt: { type: 'string', description: 'ISO 8601 start datetime, e.g. 2025-08-20T15:00:00-04:00' },
+                  endAt: { type: 'string', description: 'ISO 8601 end datetime, window to search' }
+                },
+                required: ['startAt', 'endAt']
+              }
+            },
+            {
+              type: 'function',
+              name: 'square_create_booking',
+              description: 'Creates a booking for the selected slot and caller.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  startAt: { type: 'string', description: 'Chosen start datetime in ISO 8601' },
+                  serviceName: { type: 'string', description: 'Service name; used to look up the service variation ID if needed' },
+                  customerGivenName: { type: 'string' },
+                  customerPhone: { type: 'string' },
+                  customerEmail: { type: 'string' },
+                  note: { type: 'string' }
+                },
+                required: ['startAt']
+              }
+            }
+          ]
         }
       };
       openAiWs.send(JSON.stringify(sessionUpdate));
@@ -285,69 +299,6 @@ fastify.register(async function (app) {
           currentKbCap     = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
           const instrCap   = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
-          // Add near your other msg.type handlers
-if (msg.type === 'response.function_call') {
-  const { name, arguments: argsJson, call_id } = msg;
-  let toolResult = null;
-
-  try {
-    const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
-    const { locationId, teamMemberId } = sqDefaults();
-
-    if (name === 'square_search_availability') {
-      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
-      if (!serviceVariationId && args.serviceName) {
-        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
-      }
-      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
-
-      const slots = await searchAvailability({
-        locationId,
-        teamMemberId,
-        serviceVariationId,
-        startAt: args.startAt,
-        endAt: args.endAt
-      });
-
-      toolResult = { ok: true, slots };
-    }
-
-    if (name === 'square_create_booking') {
-      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
-      if (!serviceVariationId && args.serviceName) {
-        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
-      }
-      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
-
-      const customer = await ensureCustomerByPhoneOrEmail({
-        givenName: args.customerGivenName,
-        phone: args.customerPhone,
-        email: args.customerEmail
-      });
-
-      const booking = await createBooking({
-        locationId,
-        teamMemberId,
-        customerId: customer?.id,
-        serviceVariationId,
-        startAt: args.startAt,
-        sellerNote: args.note || undefined
-      });
-
-      toolResult = { ok: true, booking };
-    }
-  } catch (e) {
-    toolResult = { ok: false, error: String(e?.message || e) };
-  }
-
-  // Send tool result back to the model so it can continue the conversation
-  openAiWs.send(JSON.stringify({
-    type: 'response.function_call_output',
-    call_id,
-    output: JSON.stringify(toolResult)
-  }));
-  return; // handled
-}
           // Connect OpenAI Realtime for this call
           openAiReady = false;
           openAiWs = new WebSocket(
@@ -358,8 +309,72 @@ if (msg.type === 'response.function_call') {
           // ---- OpenAI WS handlers ----
           openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate(); });
 
-          openAiWs.on('message', (buf) => {
+          openAiWs.on('message', async (buf) => {
             let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+
+            // Handle function/tool calls from Realtime
+            if (msg.type === 'response.function_call') {
+              const { name, arguments: argsJson, call_id } = msg;
+              let toolResult = null;
+
+              try {
+                const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
+                const { locationId, teamMemberId } = sqDefaults();
+
+                if (name === 'square_search_availability') {
+                  let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+                  if (!serviceVariationId && args.serviceName) {
+                    serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
+                  }
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+
+                  const slots = await searchAvailability({
+                    locationId,
+                    teamMemberId,
+                    serviceVariationId,
+                    startAt: args.startAt,
+                    endAt: args.endAt
+                  });
+
+                  toolResult = { ok: true, slots };
+                }
+
+                if (name === 'square_create_booking') {
+                  let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+                  if (!serviceVariationId && args.serviceName) {
+                    serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
+                  }
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+
+                  const customer = await ensureCustomerByPhoneOrEmail({
+                    givenName: args.customerGivenName,
+                    phone: args.customerPhone,
+                    email: args.customerEmail
+                  });
+
+                  const booking = await createBooking({
+                    locationId,
+                    teamMemberId,
+                    customerId: customer?.id,
+                    serviceVariationId,
+                    startAt: args.startAt,
+                    sellerNote: args.note || undefined
+                  });
+
+                  toolResult = { ok: true, booking };
+                }
+              } catch (e) {
+                toolResult = { ok: false, error: String(e?.message || e) };
+              }
+
+              // Send tool result back so the model can continue speaking
+              openAiWs.send(JSON.stringify({
+                type: 'response.function_call_output',
+                call_id,
+                output: JSON.stringify(toolResult)
+              }));
+              return; // stop further processing on this message
+            }
 
             if (msg.type === 'response.content.done') {
               const txt = (msg?.output_text || '').slice(0, 400);
@@ -410,6 +425,7 @@ if (msg.type === 'response.function_call') {
             kbText = await fetchKbText(tenantRef.faq_urls);
           }
           instructions = tenantRef ? buildInstructions(tenantRef, kbText) : 'You are a helpful salon receptionist.';
+          const instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
           if (instructions.length > instrCap) instructions = instructions.slice(0, instrCap);
 
           tenantReady = true;
