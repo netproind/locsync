@@ -7,6 +7,12 @@ import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
+import {
+  searchAvailability,
+  createBooking,
+  ensureCustomerByPhoneOrEmail,
+  findServiceVariationIdByName
+} from './square.js';
 
 // ---------- ENV ----------
 dotenv.config();
@@ -77,6 +83,13 @@ async function fetchKbText(urls = []) {
     }
   }
   return combined.trim();
+}
+
+function sqDefaults() {
+  return {
+    locationId: process.env.SQUARE_DEFAULT_LOCATION_ID,
+    teamMemberId: process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID
+  };
 }
 
 // ---------- INSTRUCTIONS BUILDER ----------
@@ -208,7 +221,42 @@ fastify.register(async function (app) {
           voice: chosenVoice,
           instructions,
           modalities: selectedMods,
-          temperature: selectedTemp
+          temperature: selectedTemp,
+
+          // NEW: tools the model may call
+    tools: [
+      {
+        type: 'function',
+        name: 'square_search_availability',
+        description: 'Searchs open appointment slots for a given service and date range.',
+        parameters: {
+          type: 'object',
+          properties: {
+            serviceName: { type: 'string', description: 'Human-friendly service name, e.g. "Interlock 2-3 turns". If missing, the default service variation env var will be used.' },
+            startAt: { type: 'string', description: 'ISO 8601 start datetime, e.g. 2025-08-20T15:00:00-04:00' },
+            endAt: { type: 'string', description: 'ISO 8601 end datetime, window to search' }
+          },
+          required: ['startAt', 'endAt']
+        }
+      },
+      {
+        type: 'function',
+        name: 'square_create_booking',
+        description: 'Creates a booking for the selected slot and caller.',
+        parameters: {
+          type: 'object',
+          properties: {
+            startAt: { type: 'string', description: 'Chosen start datetime in ISO 8601' },
+            serviceName: { type: 'string', description: 'Service name; used to look up the service variation ID if needed' },
+            customerGivenName: { type: 'string' },
+            customerPhone: { type: 'string' },
+            customerEmail: { type: 'string' },
+            note: { type: 'string' }
+          },
+          required: ['startAt']
+        }
+      }
+    ]
         }
       };
       openAiWs.send(JSON.stringify(sessionUpdate));
@@ -237,6 +285,69 @@ fastify.register(async function (app) {
           currentKbCap     = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
           const instrCap   = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
+          // Add near your other msg.type handlers
+if (msg.type === 'response.function_call') {
+  const { name, arguments: argsJson, call_id } = msg;
+  let toolResult = null;
+
+  try {
+    const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
+    const { locationId, teamMemberId } = sqDefaults();
+
+    if (name === 'square_search_availability') {
+      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+      if (!serviceVariationId && args.serviceName) {
+        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
+      }
+      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+
+      const slots = await searchAvailability({
+        locationId,
+        teamMemberId,
+        serviceVariationId,
+        startAt: args.startAt,
+        endAt: args.endAt
+      });
+
+      toolResult = { ok: true, slots };
+    }
+
+    if (name === 'square_create_booking') {
+      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+      if (!serviceVariationId && args.serviceName) {
+        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
+      }
+      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+
+      const customer = await ensureCustomerByPhoneOrEmail({
+        givenName: args.customerGivenName,
+        phone: args.customerPhone,
+        email: args.customerEmail
+      });
+
+      const booking = await createBooking({
+        locationId,
+        teamMemberId,
+        customerId: customer?.id,
+        serviceVariationId,
+        startAt: args.startAt,
+        sellerNote: args.note || undefined
+      });
+
+      toolResult = { ok: true, booking };
+    }
+  } catch (e) {
+    toolResult = { ok: false, error: String(e?.message || e) };
+  }
+
+  // Send tool result back to the model so it can continue the conversation
+  openAiWs.send(JSON.stringify({
+    type: 'response.function_call_output',
+    call_id,
+    output: JSON.stringify(toolResult)
+  }));
+  return; // handled
+}
           // Connect OpenAI Realtime for this call
           openAiReady = false;
           openAiWs = new WebSocket(
