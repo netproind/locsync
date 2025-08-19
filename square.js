@@ -1,6 +1,8 @@
-// square.js (ESM)
-import { Client, Environment } from 'square';
+// square.js (ESM-friendly import for CommonJS SDK)
+import squarePkg from 'square';
 import { randomUUID } from 'node:crypto';
+
+const { Client, Environment } = squarePkg;
 
 const env = (process.env.SQUARE_ENV || 'sandbox').toLowerCase() === 'production'
   ? Environment.Production
@@ -11,7 +13,7 @@ export const square = new Client({
   accessToken: process.env.SQUARE_ACCESS_TOKEN
 });
 
-// Convenience getters (Square SDK surfaces availability under bookingsApi)
+// Convenience getters
 export const locationsApi = square.locationsApi;
 export const bookingsApi  = square.bookingsApi;
 export const customersApi = square.customersApi;
@@ -54,7 +56,6 @@ export async function findServiceVariationIdByName({ serviceName }) {
 
 async function getServiceVariationVersion(serviceVariationId) {
   const res = await catalogApi.retrieveCatalogObject(serviceVariationId, false);
-  // version is on the catalog object wrapper
   return res?.result?.object?.version ?? null;
 }
 
@@ -88,7 +89,6 @@ export async function createBooking({
   startAt,
   sellerNote
 }) {
-  // Required by CreateBooking: service_variation_version must be supplied. 1
   const serviceVariationVersion = await getServiceVariationVersion(serviceVariationId);
   if (serviceVariationVersion == null) {
     throw new Error('Could not resolve service_variation_version for the chosen service.');
@@ -100,7 +100,6 @@ export async function createBooking({
       startAt,
       customerId,
       appointmentSegments: [{
-        // Omit durationMinutes: Square uses the service variation’s configured duration.
         serviceVariationId,
         serviceVariationVersion,
         teamMemberId
@@ -115,6 +114,4 @@ export async function createBooking({
 }
 
 export async function cancelBooking({ bookingId, version }) {
-  const { result } = await bookingsApi.cancelBooking(bookingId, { version });
-  return result.booking;
-}
+  const { result } = await bookingsApi.cancelBooking(bookingId, { version
