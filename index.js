@@ -297,7 +297,6 @@ fastify.register(async function (app) {
           selectedMods     = Array.isArray(tenantRef?.modalities) ? tenantRef.modalities : DEFAULTS.modalities;
           selectedTurnDet  = tenantRef?.turn_detection || DEFAULTS.turn_detection;
           currentKbCap     = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
-          const instrCap   = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
           // Connect OpenAI Realtime for this call
           openAiReady = false;
@@ -424,8 +423,8 @@ fastify.register(async function (app) {
           if (tenantRef?.faq_urls?.length) {
             kbText = await fetchKbText(tenantRef.faq_urls);
           }
+          let instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
           instructions = tenantRef ? buildInstructions(tenantRef, kbText) : 'You are a helpful salon receptionist.';
-          const instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
           if (instructions.length > instrCap) instructions = instructions.slice(0, instrCap);
 
           tenantReady = true;
