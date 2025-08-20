@@ -153,6 +153,17 @@ export async function searchAvailability({
   const { availabilities = [] } = await sqFetch('/v2/bookings/availability/search', { method: 'POST', body });
   return availabilities;
 }
+// Resolve a customer to one or more customer IDs using phone/email/name.
+// Keeps index.js happy if it expects an array of IDs.
+export async function resolveCustomerIds({ phone, email, givenName, familyName }) {
+  try {
+    const customer = await findCustomer({ phone, email, givenName, familyName });
+    return customer ? [customer.id] : [];
+  } catch (e) {
+    // Return empty array on lookup failure so callers can handle "not found"
+    return [];
+  }
+}
 
 export async function createBooking({
   locationId,
