@@ -188,6 +188,31 @@ fastify.get('/dev/square/ping', async (_req, reply) => {
   }
 });
 
+// Dev: test booking lookup over HTTP (no phone call needed)
+fastify.get('/dev/square/lookup', async (req, reply) => {
+  try {
+    const { phone, email, givenName, familyName, includePast } = req.query || {};
+    const { locationId, teamMemberId } = sqDefaults();
+
+    // lazy import to avoid circular on top-level
+    const { lookupUpcomingBookingsByPhoneOrEmail } = await import('./square.js');
+
+    const out = await lookupUpcomingBookingsByPhoneOrEmail({
+      phone: phone || null,
+      email: email || null,
+      givenName: givenName || null,
+      familyName: familyName || null,
+      locationId,
+      teamMemberId,
+      includePast: includePast === 'true'
+    });
+
+    reply.send({ ok: true, ...out });
+  } catch (e) {
+    reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Twilio webhook: start bidirectional media stream and pass tenant key
 fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
