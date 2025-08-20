@@ -1,19 +1,24 @@
-// square.js — Square SDK helpers (ESM, Node 20)
-// Robust against CJS/ESM export differences by using createRequire.
-// Also uses customUrl instead of Environment/environments.
+// square.js — Square SDK helpers (Node 20, ESM)
+// Works with new Square SDK (SquareClient) and falls back to old (Client).
 
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
-const squarePkg = require('square'); // load CJS reliably
+const squarePkg = require('square'); // robust for CJS
 
-const { Client } = squarePkg;
-if (!Client) {
-  throw new Error('Square SDK: Client export not found from "square" package.');
+// Handle both old and new SDK names
+const SquareClient =
+  squarePkg?.SquareClient ||
+  squarePkg?.Client ||
+  squarePkg?.default?.SquareClient ||
+  squarePkg?.default?.Client;
+
+if (!SquareClient) {
+  throw new Error('Square SDK: could not find SquareClient/Client export from "square" package.');
 }
 
-// ---- Base URL by env name (no Environment enum needed) ---------------------
+// === Base URL by env name (skip Environment enum entirely) ===================
 const envName = (process.env.SQUARE_ENV || 'sandbox').toLowerCase();
 const baseUrl =
   envName === 'production'
@@ -24,10 +29,11 @@ if (!process.env.SQUARE_ACCESS_TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
-// ---- Client ----------------------------------------------------------------
-export const square = new Client({
-  customUrl: baseUrl,
-  accessToken: process.env.SQUARE_ACCESS_TOKEN
+// === Client ==================================================================
+export const square = new SquareClient({
+  // New SDK expects `token` + `baseUrl`
+  token: process.env.SQUARE_ACCESS_TOKEN,
+  baseUrl
 });
 
 // Convenience APIs
@@ -36,30 +42,31 @@ const bookingsApi  = square.bookingsApi;
 const customersApi = square.customersApi;
 const catalogApi   = square.catalogApi;
 
-// ---- Utils -----------------------------------------------------------------
+// ---------- small utils ----------
 function onlyDigits(s = '') {
   return String(s || '').replace(/\D+/g, '');
 }
 function toE164US(phone) {
   const trimmed = (phone || '').trim();
-  if (/^\+/.test(trimmed)) return trimmed;       // already E.164
+  if (/^\+/.test(trimmed)) return trimmed;        // already E.164
   const digits = onlyDigits(trimmed);
-  if (digits.length === 10) return `+1${digits}`; // assume US
+  if (digits.length === 10) return `+1${digits}`;  // assume US
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
   return trimmed.startsWith('+') ? trimmed : `+${digits}`;
 }
 
-// ---- Locations --------------------------------------------------------------
+// ---------- Locations ----------
 export async function listLocations() {
   const { result } = await locationsApi.listLocations();
   return result?.locations || [];
 }
 
-// ---- Customers --------------------------------------------------------------
+// ---------- Customers ----------
 export async function findCustomer({ phone, email, givenName, familyName }) {
   // exact email
   if (email) {
     const { result } = await customersApi.searchCustomers({
+      // NOTE: new filter keys are snake_case
       query: { filter: { email_address: { exact: String(email).trim() } } }
     });
     if (result?.customers?.[0]) return result.customers[0];
@@ -72,7 +79,7 @@ export async function findCustomer({ phone, email, givenName, familyName }) {
     });
     if (result?.customers?.[0]) return result.customers[0];
   }
-  // fuzzy name
+  // fuzzy by name
   if (givenName || familyName) {
     const filter = {};
     if (givenName)  filter.given_name  = { fuzzy: String(givenName).trim() };
@@ -95,7 +102,7 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   return result?.customer || null;
 }
 
-// ---- Catalog (Services) -----------------------------------------------------
+// ---------- Catalog (services) ----------
 export async function findServiceVariationIdByName({ serviceName }) {
   const { result } = await catalogApi.searchCatalogItems({ textFilter: serviceName });
   const items = result?.items || [];
@@ -113,7 +120,7 @@ async function getServiceVariationVersion(serviceVariationId) {
   return result?.object?.version ?? null;
 }
 
-// ---- Availability & Bookings -----------------------------------------------
+// ---------- Availability & Bookings ----------
 export async function searchAvailability({
   locationId,
   teamMemberId,
