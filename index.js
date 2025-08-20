@@ -412,154 +412,167 @@ fastify.register(async function (app) {
           openAiWs.on('message', async (buf) => {
             let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
 
-            // Tool calls
-            if (msg.type === 'response.function_call') {
-              const { name, arguments: argsJson, call_id } = msg;
-              let toolResult = null;
+            // Handle function/tool calls from Realtime
+if (msg.type === 'response.function_call') {
+  const { name, arguments: argsJson, call_id } = msg;
+  let toolResult = null;
 
-              try {
-                const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
-                const { locationId, teamMemberId } = sqDefaults();
+  try {
+    const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
+    const { locationId, teamMemberId } = sqDefaults();
 
-                if (name === 'square_search_availability') {
-                  let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
-                  if (!serviceVariationId && args.serviceName) {
-                    serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
-                  }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+    app.log.info({ tool: name, args }, 'AI requested tool');
 
-                  const slots = await searchAvailability({
-                    locationId,
-                    teamMemberId,
-                    serviceVariationId,
-                    startAt: args.startAt,
-                    endAt: args.endAt
-                  });
+    if (name === 'square_search_availability') {
+      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+      if (!serviceVariationId && args.serviceName) {
+        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
+      }
+      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
 
-                  toolResult = { ok: true, slots };
-                }
+      const slots = await searchAvailability({
+        locationId,
+        teamMemberId,
+        serviceVariationId,
+        startAt: args.startAt,
+        endAt: args.endAt
+      });
 
-                if (name === 'square_create_booking') {
-                  let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
-                  if (!serviceVariationId && args.serviceName) {
-                    serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
-                  }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+      toolResult = { ok: true, slots };
+    }
 
-                  const customer = await ensureCustomerByPhoneOrEmail({
-                    givenName: args.customerGivenName,
-                    phone: args.customerPhone,
-                    email: args.customerEmail
-                  });
+    if (name === 'square_create_booking') {
+      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+      if (!serviceVariationId && args.serviceName) {
+        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
+      }
+      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
 
-                  const booking = await createBooking({
-                    locationId,
-                    teamMemberId,
-                    customerId: customer?.id,
-                    serviceVariationId,
-                    startAt: args.startAt,
-                    sellerNote: args.note || undefined
-                  });
+      const customer = await ensureCustomerByPhoneOrEmail({
+        givenName: args.customerGivenName,
+        phone: args.customerPhone,
+        email: args.customerEmail
+      });
 
-                  toolResult = { ok: true, booking };
-                }
+      const booking = await createBooking({
+        locationId,
+        teamMemberId,
+        customerId: customer?.id,
+        serviceVariationId,
+        startAt: args.startAt,
+        sellerNote: args.note || undefined
+      });
 
-                if (name === 'square_find_booking') {
-                  const tz = tenantRef?.timezone || 'America/Detroit';
-                  let startAt = args.startAt || null;
-                  let endAt = args.endAt || null;
-                  if (args.date && (!startAt || !endAt)) {
-                    const win = dayWindowUTC(args.date);
-                    startAt = startAt || win.startAt;
-                    endAt = endAt || win.endAt;
-                  }
+      toolResult = { ok: true, booking };
+    }
 
-                  const customerIds = await resolveCustomerIds({
-                    email: args.email,
-                    phone: args.phone,
-                    name: args.name
-                  });
+    if (name === 'square_find_booking') {
+      const tz = tenantRef?.timezone || 'America/Detroit';
+      let startAt = args.startAt || null;
+      let endAt = args.endAt || null;
+      if (args.date && (!startAt || !endAt)) {
+        const win = dayWindowUTC(args.date);
+        startAt = startAt || win.startAt;
+        endAt = endAt || win.endAt;
+      }
 
-                  if (!customerIds.length) {
-                    toolResult = { ok: false, error: 'No matching customer found.' };
-                  } else {
-                    const bookings = await searchBookingsByCustomer({
-                      customerIds,
-                      locationId,
-                      teamMemberId,
-                      startAt,
-                      endAt
-                    });
+      const customerIds = await resolveCustomerIds({
+        email: args.email,
+        phone: args.phone,
+        name: args.name
+      });
 
-                    bookings.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
-                    const formatted = bookings.slice(0, 10).map(b => ({
-                      bookingId: b.id,
-                      startAt: b.startAt,
-                      spoken: speakTime(b.startAt, tz),
-                      locationId: b.locationId,
-                      customerId: b.customerId,
-                      segments: (b.appointmentSegments || []).map(s => ({
-                        serviceVariationId: s.serviceVariationId,
-                        durationMinutes: s.durationMinutes ?? null
-                      }))
-                    }));
-                    toolResult = { ok: true, bookings: formatted };
-                  }
-                }
+      if (!customerIds.length) {
+        toolResult = { ok: false, error: 'No matching customer found.' };
+      } else {
+        const bookings = await searchBookingsByCustomer({
+          customerIds,
+          locationId,
+          teamMemberId,
+          startAt,
+          endAt
+        });
 
-                if (name === 'square_cancel_booking') {
-                  // direct by bookingId?
-                  let booking = null;
-                  if (args.bookingId) {
-                    booking = await retrieveBooking({ bookingId: args.bookingId });
-                  } else {
-                    const { locationId, teamMemberId } = sqDefaults();
-                    const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
-                    let startAt, endAt;
-                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
-                    const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
-                    found.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
-                    booking = found[0] || null;
-                  }
+        bookings.sort((a, b) => new Date(a.startAt || a.start_at) - new Date(b.startAt || b.start_at));
+        const formatted = bookings.slice(0, 10).map(b => {
+          const startIso = b.startAt || b.start_at;
+          return {
+            bookingId: b.id,
+            startAt: startIso,
+            spoken: speakTime(startIso, tz),
+            locationId: b.locationId || b.location_id,
+            customerId: b.customerId || b.customer_id,
+            segments: (b.appointmentSegments || b.appointment_segments || []).map(s => ({
+              serviceVariationId: s.serviceVariationId || s.service_variation_id,
+              durationMinutes: s.durationMinutes ?? s.duration_minutes ?? null
+            }))
+          };
+        });
+        toolResult = { ok: true, bookings: formatted };
+      }
+    }
 
-                  if (!booking) throw new Error('No matching booking found to cancel.');
-                  const cancelled = await cancelBooking({ bookingId: booking.id, version: booking.version });
-                  toolResult = { ok: true, booking: { bookingId: cancelled.id, startAt: cancelled.startAt, status: 'CANCELLED' } };
-                }
+    if (name === 'square_cancel_booking') {
+      let booking = null;
+      if (args.bookingId) {
+        booking = await retrieveBooking({ bookingId: args.bookingId });
+      } else {
+        const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
+        let startAt, endAt;
+        if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+        const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
+        found.sort((a, b) => new Date(a.startAt || a.start_at) - new Date(b.startAt || b.start_at));
+        booking = found[0] || null;
+      }
 
-                if (name === 'square_reschedule_booking') {
-                  // Must have newStartAt
-                  if (!args.newStartAt) throw new Error('newStartAt is required.');
+      if (!booking) throw new Error('No matching booking found to cancel.');
+      const version = booking.version;
+      const cancelled = await cancelBooking({ bookingId: booking.id, version });
+      toolResult = { ok: true, booking: { bookingId: cancelled.id, startAt: cancelled.startAt || cancelled.start_at, status: 'CANCELLED' } };
+    }
 
-                  let booking = null;
-                  if (args.bookingId) {
-                    booking = await retrieveBooking({ bookingId: args.bookingId });
-                  } else {
-                    const { locationId, teamMemberId } = sqDefaults();
-                    const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
-                    let startAt, endAt;
-                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
-                    const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
-                    found.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
-                    booking = found[0] || null;
-                  }
+    if (name === 'square_reschedule_booking') {
+      if (!args.newStartAt) throw new Error('newStartAt is required.');
 
-                  if (!booking) throw new Error('No matching booking found to reschedule.');
-                  const updated = await rescheduleBooking({ bookingId: booking.id, newStartAt: args.newStartAt });
-                  toolResult = { ok: true, booking: { bookingId: updated.id, startAt: updated.startAt, status: 'RESCHEDULED' } };
-                }
-              } catch (e) {
-                toolResult = { ok: false, error: String(e?.message || e) };
-              }
+      let booking = null;
+      if (args.bookingId) {
+        booking = await retrieveBooking({ bookingId: args.bookingId });
+      } else {
+        const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
+        let startAt, endAt;
+        if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+        const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
+        found.sort((a, b) => new Date(a.startAt || a.start_at) - new Date(b.startAt || b.start_at));
+        booking = found[0] || null;
+      }
 
-              // return tool result to model
-              openAiWs.send(JSON.stringify({
-                type: 'response.function_call_output',
-                call_id,
-                output: JSON.stringify(toolResult)
-              }));
-              return;
-            }
+      if (!booking) throw new Error('No matching booking found to reschedule.');
+      const updated = await rescheduleBooking({ bookingId: booking.id, newStartAt: args.newStartAt });
+      toolResult = { ok: true, booking: { bookingId: updated.id, startAt: updated.startAt || updated.start_at, status: 'RESCHEDULED' } };
+    }
+  } catch (e) {
+    toolResult = { ok: false, error: String(e?.message || e) };
+    app.log.error({ toolError: toolResult }, 'Tool error');
+  }
+
+  // Send tool result back so the model can continue
+  openAiWs.send(JSON.stringify({
+    type: 'response.function_call_output',
+    call_id,
+    output: JSON.stringify(toolResult)
+  }));
+
+  // **Nudge the model to speak a follow-up out loud** (success or error)
+  openAiWs.send(JSON.stringify({
+    type: 'response.create',
+    response: {
+      instructions: toolResult?.ok
+        ? 'Explain the result for the caller clearly and briefly.'
+        : 'Apologize briefly, say what went wrong, and ask the caller for the phone or email on the appointment.'
+    }
+  }));
+  return;
+}
 
             // Normal content logs
             if (msg.type === 'response.content.done') {
