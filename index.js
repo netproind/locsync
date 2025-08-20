@@ -274,6 +274,21 @@ fastify.register(async function (app) {
               }
             },
             {
+  type: 'function',
+  name: 'square_lookup_booking',
+  description: 'Look up the caller’s upcoming appointments by phone, email, or name. Returns the next upcoming booking(s).',
+  parameters: {
+    type: 'object',
+    properties: {
+      customerPhone: { type: 'string', description: 'E.164 like +13135551234 or US 10 digits; other punctuation allowed.' },
+      customerEmail: { type: 'string', description: 'Customer email (case-insensitive).' },
+      customerGivenName: { type: 'string', description: 'First name, if provided instead of phone/email.' },
+      customerFamilyName: { type: 'string', description: 'Last name, optional for disambiguation.' },
+      includePast: { type: 'boolean', description: 'If true, also return past bookings (sorted by startAt).' }
+    }
+  }
+            },
+            {
               type: 'function',
               name: 'square_create_booking',
               description: 'Creates a booking for the selected slot and caller.',
