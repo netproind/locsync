@@ -14,8 +14,10 @@ if (!TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
-const SQUARE_VERSION = '2025-05-15'; // safe recent version; adjust if needed
+// Pick a recent, valid Square-Version (update later if Square deprecates)
+const SQUARE_VERSION = '2025-05-15';
 
+// ------------------------ core fetch wrapper ------------------------
 async function sqFetch(path, { method = 'GET', body } = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
@@ -32,13 +34,16 @@ async function sqFetch(path, { method = 'GET', body } = {}) {
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
 
   if (!res.ok) {
-    const msg = json?.errors?.[0]?.detail || json?.errors?.[0]?.code || res.statusText || 'Square error';
+    const first = Array.isArray(json?.errors) ? json.errors[0] : null;
+    const code = first?.code || '';
+    const detail = first?.detail || '';
+    const msg = `${res.status} ${res.statusText}${code ? `:${code}` : ''}${detail ? `:${detail}` : ''}`;
     throw new Error(`Square API ${method} ${path} failed: ${msg}`);
   }
   return json;
 }
 
-// ---------- small utils ----------
+// ------------------------ small utils ------------------------
 function onlyDigits(s = '') {
   return String(s || '').replace(/\D+/g, '');
 }
@@ -46,33 +51,34 @@ function toE164US(phone) {
   const trimmed = (phone || '').trim();
   if (/^\+/.test(trimmed)) return trimmed;        // already E.164
   const digits = onlyDigits(trimmed);
-  if (digits.length === 10) return `+1${digits}`;  // assume US
+  if (digits.length === 10) return `+1${digits}`;  // assume US numbers
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
   return trimmed.startsWith('+') ? trimmed : `+${digits}`;
 }
 
-// ---------- Locations ----------
+// ------------------------ Locations ------------------------
 export async function listLocations() {
   const { locations = [] } = await sqFetch('/v2/locations', { method: 'GET' });
   return locations;
 }
 
-// ---------- Customers ----------
+// ------------------------ Customers ------------------------
+// Try to find a customer by exact email, exact phone (E.164), or fuzzy name.
 export async function findCustomer({ phone, email, givenName, familyName }) {
-  // try exact email
+  // exact email
   if (email) {
     const body = { query: { filter: { email_address: { exact: String(email).trim() } } } };
     const { customers = [] } = await sqFetch('/v2/customers/search', { method: 'POST', body });
     if (customers[0]) return customers[0];
   }
-  // try exact phone (E.164)
+  // exact phone (E.164)
   if (phone) {
     const e164 = toE164US(phone);
     const body = { query: { filter: { phone_number: { exact: e164 } } } };
     const { customers = [] } = await sqFetch('/v2/customers/search', { method: 'POST', body });
     if (customers[0]) return customers[0];
   }
-  // fuzzy name search (given or family)
+  // fuzzy by name
   if (givenName || familyName) {
     const filter = {};
     if (givenName)  filter.given_name  = { fuzzy: String(givenName).trim() };
@@ -89,21 +95,24 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   if (existing) return existing;
 
   const body = {
-    givenName: givenName || 'Caller',
-    ...(email ? { emailAddress: String(email).trim() } : {}),
-    ...(phone ? { phoneNumber: toE164US(phone) } : {})
+    given_name: givenName || 'Caller',
+    ...(email ? { email_address: String(email).trim() } : {}),
+    ...(phone ? { phone_number: toE164US(phone) } : {})
   };
   const { customer } = await sqFetch('/v2/customers', { method: 'POST', body });
   return customer || null;
 }
 
-// ---------- Catalog (services) ----------
+// ------------------------ Catalog (services) ------------------------
 export async function findServiceVariationIdByName({ serviceName }) {
-  const body = { textFilter: serviceName };
+  const body = { text_filter: serviceName };
   const { items = [] } = await sqFetch('/v2/catalog/search-catalog-items', { method: 'POST', body });
   for (const item of items) {
-    if (item?.productType === 'APPOINTMENTS_SERVICE') {
-      const vars = item?.itemData?.variations || [];
+    if (item?.product_type === 'APPOINTMENTS_SERVICE' || item?.productType === 'APPOINTMENTS_SERVICE') {
+      const vars =
+        item?.item_data?.variations ||
+        item?.itemData?.variations ||
+        [];
       if (vars[0]?.id) return vars[0].id;
     }
   }
@@ -111,11 +120,14 @@ export async function findServiceVariationIdByName({ serviceName }) {
 }
 
 async function getServiceVariationVersion(serviceVariationId) {
-  const { object } = await sqFetch(`/v2/catalog/object/${encodeURIComponent(serviceVariationId)}?include_related_objects=false`, { method: 'GET' });
+  const { object } = await sqFetch(
+    `/v2/catalog/object/${encodeURIComponent(serviceVariationId)}?include_related_objects=false`,
+    { method: 'GET' }
+  );
   return object?.version ?? null;
 }
 
-// ---------- Availability & Bookings ----------
+// ------------------------ Availability & Bookings ------------------------
 export async function searchAvailability({
   locationId,
   teamMemberId,
@@ -123,18 +135,18 @@ export async function searchAvailability({
   startAt,
   endAt
 }) {
-  // Endpoint: POST /v2/bookings/availability/search
+  // POST /v2/bookings/availability/search
   const body = {
     query: {
       filter: {
-        locationId,
-        segmentFilters: [
+        location_id: locationId,
+        start_at_range: { start_at: startAt, end_at: endAt },
+        segment_filters: [
           {
-            serviceVariationId,
-            teamMemberIdFilter: { any: [teamMemberId] }
+            service_variation_id: serviceVariationId,
+            team_member_id_filter: { any: [teamMemberId] }
           }
-        ],
-        startAtRange: { startAt, endAt }
+        ]
       }
     }
   };
@@ -157,20 +169,20 @@ export async function createBooking({
 
   const body = {
     booking: {
-      locationId,
-      startAt,
-      customerId,
-      appointmentSegments: [
+      location_id: locationId,
+      start_at: startAt,
+      customer_id: customerId,
+      appointment_segments: [
         {
-          serviceVariationId,
-          serviceVariationVersion,
-          teamMemberId
-          // duration is derived from service variation configuration
+          service_variation_id: serviceVariationId,
+          service_variation_version: serviceVariationVersion,
+          team_member_id: teamMemberId
+          // duration derived from the service variation configuration in Square
         }
       ],
-      ...(sellerNote ? { sellerNote } : {})
+      ...(sellerNote ? { seller_note: sellerNote } : {})
     },
-    idempotencyKey: randomUUID()
+    idempotency_key: randomUUID()
   };
 
   const { booking } = await sqFetch('/v2/bookings', { method: 'POST', body });
@@ -190,12 +202,18 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
   if (!customer) return { customer: null, bookings: [] };
 
   const nowIso = new Date().toISOString();
-  const filter = { customerId: customer.id };
-  if (locationId)   filter.locationId = locationId;
-  if (teamMemberId) filter.teamMemberId = teamMemberId;
-  if (!includePast) filter.startAtRange = { startAt: nowIso };
+  const filter = { customer_id: customer.id };
+  if (locationId)   filter.location_id = locationId;
+  if (teamMemberId) filter.team_member_id = teamMemberId;
+  if (!includePast) filter.start_at_range = { start_at: nowIso };
 
-  const body = { query: { filter, sort: { sortField: 'START_AT', order: 'ASC' } } };
+  const body = {
+    query: {
+      filter,
+      sort: { sort_field: 'START_AT', order: 'ASC' }
+    }
+  };
+
   const { bookings = [] } = await sqFetch('/v2/bookings/search', { method: 'POST', body });
   return { customer, bookings };
 }
