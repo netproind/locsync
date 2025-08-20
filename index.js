@@ -210,6 +210,19 @@ fastify.get('/dev/square/ping', async (_req, reply) => {
       ok: true,
       locations: locations.map(l => ({ id: l.id, name: l.name }))
     });
+    fastify.get('/dev/find', async (req, reply) => {
+  try {
+    const { phone, email, name, date } = req.query || {};
+    const { locationId, teamMemberId } = sqDefaults();
+    let startAt, endAt;
+    if (date) ({ startAt, endAt } = dayWindowUTC(String(date)));
+    const ids = await resolveCustomerIds({ phone, email, name });
+    const bookings = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
+    reply.send({ ok: true, count: bookings.length, sample: bookings.slice(0, 3) });
+  } catch (e) {
+    reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
   } catch (e) {
     reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }
