@@ -1,13 +1,14 @@
-// square.js — Square SDK helpers (ESM-friendly import for CommonJS SDK)
+// square.js — Square SDK helpers (ESM app + CommonJS SDK)
 import squarePkg from 'square';
 import { randomUUID } from 'node:crypto';
 
-const { Client, Environment } = squarePkg;
+// NOTE: in square@^43 the export is `environments` (lowercase), not `Environment`
+const { Client, environments } = squarePkg;
 
 const env =
   (process.env.SQUARE_ENV || 'sandbox').toLowerCase() === 'production'
-    ? Environment.Production
-    : Environment.Sandbox;
+    ? environments.production
+    : environments.sandbox;
 
 export const square = new Client({
   environment: env,
@@ -16,10 +17,10 @@ export const square = new Client({
 
 // Convenience APIs
 export const locationsApi = square.locationsApi;
-export const bookingsApi = square.bookingsApi;
+export const bookingsApi  = square.bookingsApi;
 export const customersApi = square.customersApi;
-export const catalogApi = square.catalogApi;
-export const teamApi = square.teamApi;
+export const catalogApi   = square.catalogApi;
+export const teamApi      = square.teamApi;
 
 // ---------- Helpers ----------
 
@@ -47,9 +48,7 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
 
 // Look up a service variation ID by (partial) service name
 export async function findServiceVariationIdByName({ serviceName }) {
-  const res = await catalogApi.searchCatalogItems({
-    textFilter: serviceName
-  });
+  const res = await catalogApi.searchCatalogItems({ textFilter: serviceName });
   const items = res?.result?.items || [];
   for (const item of items) {
     if (item?.productType === 'APPOINTMENTS_SERVICE') {
@@ -112,7 +111,7 @@ export async function createBooking({
       customerId,
       appointmentSegments: [
         {
-          // Square uses the service variation configuration for duration
+          // Duration is read from the service variation configuration
           serviceVariationId,
           serviceVariationVersion,
           teamMemberId
