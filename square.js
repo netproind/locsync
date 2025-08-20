@@ -1,26 +1,29 @@
-// square.js (ESM-friendly import for CommonJS SDK)
+// square.js — Square SDK helpers (ESM-friendly import for CommonJS SDK)
 import squarePkg from 'square';
 import { randomUUID } from 'node:crypto';
 
 const { Client, Environment } = squarePkg;
 
-const env = (process.env.SQUARE_ENV || 'sandbox').toLowerCase() === 'production'
-  ? Environment.Production
-  : Environment.Sandbox;
+const env =
+  (process.env.SQUARE_ENV || 'sandbox').toLowerCase() === 'production'
+    ? Environment.Production
+    : Environment.Sandbox;
 
 export const square = new Client({
   environment: env,
   accessToken: process.env.SQUARE_ACCESS_TOKEN
 });
 
-// Convenience getters
+// Convenience APIs
 export const locationsApi = square.locationsApi;
-export const bookingsApi  = square.bookingsApi;
+export const bookingsApi = square.bookingsApi;
 export const customersApi = square.customersApi;
-export const catalogApi   = square.catalogApi;
-export const teamApi      = square.teamApi;
+export const catalogApi = square.catalogApi;
+export const teamApi = square.teamApi;
 
-// --- Helpers ---
+// ---------- Helpers ----------
+
+// Find or create a customer by email/phone
 export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) {
   if (email) {
     const found = await customersApi.searchCustomers({
@@ -42,8 +45,11 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   return res.result.customer;
 }
 
+// Look up a service variation ID by (partial) service name
 export async function findServiceVariationIdByName({ serviceName }) {
-  const res = await catalogApi.searchCatalogItems({ textFilter: serviceName });
+  const res = await catalogApi.searchCatalogItems({
+    textFilter: serviceName
+  });
   const items = res?.result?.items || [];
   for (const item of items) {
     if (item?.productType === 'APPOINTMENTS_SERVICE') {
@@ -54,11 +60,13 @@ export async function findServiceVariationIdByName({ serviceName }) {
   return null;
 }
 
+// Retrieve the version required for createBooking
 async function getServiceVariationVersion(serviceVariationId) {
   const res = await catalogApi.retrieveCatalogObject(serviceVariationId, false);
   return res?.result?.object?.version ?? null;
 }
 
+// Search availability for a service/team/location between startAt and endAt (ISO strings)
 export async function searchAvailability({
   locationId,
   teamMemberId,
@@ -70,10 +78,12 @@ export async function searchAvailability({
     query: {
       filter: {
         locationId,
-        segmentFilters: [{
-          serviceVariationId,
-          teamMemberIdFilter: { any: [teamMemberId] }
-        }],
+        segmentFilters: [
+          {
+            serviceVariationId,
+            teamMemberIdFilter: { any: [teamMemberId] }
+          }
+        ],
         startAtRange: { startAt, endAt }
       }
     }
@@ -81,6 +91,7 @@ export async function searchAvailability({
   return result?.availabilities || [];
 }
 
+// Create a booking for the chosen slot and customer
 export async function createBooking({
   locationId,
   teamMemberId,
@@ -99,11 +110,14 @@ export async function createBooking({
       locationId,
       startAt,
       customerId,
-      appointmentSegments: [{
-        serviceVariationId,
-        serviceVariationVersion,
-        teamMemberId
-      }],
+      appointmentSegments: [
+        {
+          // Square uses the service variation configuration for duration
+          serviceVariationId,
+          serviceVariationVersion,
+          teamMemberId
+        }
+      ],
       sellerNote
     },
     idempotencyKey: randomUUID()
@@ -113,5 +127,8 @@ export async function createBooking({
   return result.booking;
 }
 
+// Cancel a booking by id + version
 export async function cancelBooking({ bookingId, version }) {
-  const { result } = await bookingsApi.cancelBooking(bookingId, { version
+  const { result } = await bookingsApi.cancelBooking(bookingId, { version });
+  return result.booking;
+}
