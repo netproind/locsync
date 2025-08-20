@@ -103,7 +103,6 @@ function sqDefaults() {
     teamMemberId: process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID
   };
 }
-
 // ---------- INSTRUCTIONS BUILDER ----------
 function buildInstructions(tenant, kbText = '') {
   const style    = tenant?.voice_style || 'warm, professional, concise';
@@ -117,18 +116,28 @@ function buildInstructions(tenant, kbText = '') {
     .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
     .join('\n') || '(none)';
 
+  // Helper phrasing hint for speaking links clearly
+  const spokenBookingHint = booking === '(unset)'
+    ? '(booking link not set)'
+    : `When reading this aloud, say it slowly and clearly. If it has slashes/underscores, read them out, e.g., "locrepair dot com slash service underscore portal".`;
+
   return (
 `You are the voice receptionist for "${studio}".
 Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 seconds.
 
+HARD RULES ABOUT COMMUNICATION
+- Do NOT offer to text or email anything. Never say you'll send a link or message.
+- Always provide information verbally. If a caller asks for a link, read it aloud slowly and clearly.
+- If the caller asks you to repeat, repeat calmly and slowly.
+- If you aren't sure of an answer, ask a brief clarifying question. Do not promise to follow up by text/email.
+
 GROUNDING & SOURCES
 - Prefer tenant content and FAQ text below over anything else.
-- If the question is not covered or you’re uncertain: ask a brief clarifying question OR say you’ll text the booking link, then stop.
-- Never invent pricing, medical advice, or availability. If unsure, say you’ll confirm by text.
-- For policies, quote exactly; if not present in the KB, say you’ll check and follow up.
+- Never invent pricing, medical advice, or availability. If unsure, say you’ll check with the team.
 
 BOOKING
 - Booking link: ${booking}
+- ${spokenBookingHint}
 - For availability and booking, use the Square tools; do not guess times.
 - If the caller gives a day/time window, first call square_search_availability, then offer 2–3 nearest slots; after they pick, call square_create_booking.
 
