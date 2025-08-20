@@ -16,8 +16,8 @@ import {
   ensureCustomerByPhoneOrEmail,
   findServiceVariationIdByName,
   resolveCustomerIds,
-  searchBookingsByCustomer,
-  retrieveBooking,
+  lookupUpcomingBookingsByPhoneOrEmail, // <— use this (it exists in your square.js)
+  retrieveBooking,                       // expects (bookingId)
   rescheduleBooking,
   cancelBooking
 } from './square.js';
@@ -131,6 +131,23 @@ function speakTime(iso, tz = 'America/Detroit') {
   }).format(dt);
 }
 
+// ---- tool-call watchdogs ----
+function withTimeout(promise, ms, label = 'tool') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    )
+  ]);
+}
+function say(openAiWs, text) {
+  if (!openAiWs || openAiWs.readyState !== 1) return;
+  openAiWs.send(JSON.stringify({
+    type: 'response.create',
+    response: { instructions: text }
+  }));
+}
+
 // ---------- INSTRUCTIONS BUILDER ----------
 function buildInstructions(tenant, kbText = '') {
   const style = tenant?.voice_style || 'warm, professional, concise';
@@ -210,19 +227,30 @@ fastify.get('/dev/square/ping', async (_req, reply) => {
       ok: true,
       locations: locations.map(l => ({ id: l.id, name: l.name }))
     });
-    fastify.get('/dev/find', async (req, reply) => {
-  try {
-    const { phone, email, name, date } = req.query || {};
-    const { locationId, teamMemberId } = sqDefaults();
-    let startAt, endAt;
-    if (date) ({ startAt, endAt } = dayWindowUTC(String(date)));
-    const ids = await resolveCustomerIds({ phone, email, name });
-    const bookings = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
-    reply.send({ ok: true, count: bookings.length, sample: bookings.slice(0, 3) });
   } catch (e) {
     reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }
 });
+
+// Dev: quick customer→bookings check in browser
+fastify.get('/dev/find', async (req, reply) => {
+  try {
+    const { phone, email, name, date } = req.query;
+    const { locationId, teamMemberId } = sqDefaults();
+    let startAt, endAt;
+    if (date) ({ startAt, endAt } = dayWindowUTC(String(date)));
+
+    const ids = await resolveCustomerIds({ phone, email, givenName: name, familyName: undefined });
+    if (!ids.length) return reply.send({ ok: false, error: 'no customer' });
+
+    // use the 1st match for this dev endpoint
+    const { bookings } = await lookupUpcomingBookingsByPhoneOrEmail({
+      phone, email, givenName: name, familyName: undefined,
+      locationId, teamMemberId,
+      includePast: true // show all for debugging
+    });
+
+    reply.send({ ok: true, count: bookings.length, sample: bookings.slice(0, 3) });
   } catch (e) {
     reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }
@@ -302,7 +330,6 @@ fastify.register(async function (app) {
           modalities: selectedMods,
           temperature: selectedTemp,
           tools: [
-            // Availability (search) + Booking (create)
             {
               type: 'function',
               name: 'square_search_availability',
@@ -334,11 +361,10 @@ fastify.register(async function (app) {
                 required: ['startAt']
               }
             },
-            // Find / Cancel / Reschedule
             {
               type: 'function',
               name: 'square_find_booking',
-              description: 'Look up one or more bookings by phone, email, or name, optionally limited to a specific date or date window.',
+              description: 'Look up one or more bookings by phone, email, or name, optionally limited to a specific date.',
               parameters: {
                 type: 'object',
                 properties: {
@@ -346,8 +372,8 @@ fastify.register(async function (app) {
                   email: { type: 'string' },
                   name: { type: 'string' },
                   date: { type: 'string', description: 'yyyy-mm-dd (tenant timezone)' },
-                  startAt: { type: 'string', description: 'ISO start of custom window' },
-                  endAt: { type: 'string', description: 'ISO end of custom window' }
+                  startAt: { type: 'string' },
+                  endAt: { type: 'string' }
                 }
               }
             },
@@ -410,7 +436,7 @@ fastify.register(async function (app) {
           selectedMods = Array.isArray(tenantRef?.modalities) ? tenantRef.modalities : DEFAULTS.modalities;
           selectedTurnDet = tenantRef?.turn_detection || DEFAULTS.turn_detection;
           currentKbCap = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
-          const instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
+          const instructionsCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
           // Connect OpenAI Realtime for this call
           openAiReady = false;
@@ -425,167 +451,228 @@ fastify.register(async function (app) {
           openAiWs.on('message', async (buf) => {
             let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
 
-            // Handle function/tool calls from Realtime
-if (msg.type === 'response.function_call') {
-  const { name, arguments: argsJson, call_id } = msg;
-  let toolResult = null;
+            // Tool calls
+            if (msg.type === 'response.function_call') {
+              const { name, arguments: argsJson, call_id } = msg;
+              let toolResult = null;
 
-  try {
-    const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
-    const { locationId, teamMemberId } = sqDefaults();
+              try {
+                const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
+                const { locationId, teamMemberId } = sqDefaults();
 
-    app.log.info({ tool: name, args }, 'AI requested tool');
+                if (name === 'square_search_availability') {
+                  let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+                  if (!serviceVariationId && args.serviceName) {
+                    serviceVariationId = await withTimeout(
+                      findServiceVariationIdByName({ serviceName: args.serviceName }),
+                      4000, 'findServiceVariationIdByName'
+                    );
+                  }
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a matching serviceName.');
 
-    if (name === 'square_search_availability') {
-      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
-      if (!serviceVariationId && args.serviceName) {
-        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
-      }
-      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  const slots = await withTimeout(
+                    searchAvailability({
+                      locationId,
+                      teamMemberId,
+                      serviceVariationId,
+                      startAt: args.startAt,
+                      endAt: args.endAt
+                    }),
+                    8000, 'searchAvailability'
+                  );
 
-      const slots = await searchAvailability({
-        locationId,
-        teamMemberId,
-        serviceVariationId,
-        startAt: args.startAt,
-        endAt: args.endAt
-      });
+                  toolResult = { ok: true, slots };
+                }
 
-      toolResult = { ok: true, slots };
-    }
+                if (name === 'square_create_booking') {
+                  let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
+                  if (!serviceVariationId && args.serviceName) {
+                    serviceVariationId = await withTimeout(
+                      findServiceVariationIdByName({ serviceName: args.serviceName }),
+                      4000, 'findServiceVariationIdByName'
+                    );
+                  }
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a matching serviceName.');
 
-    if (name === 'square_create_booking') {
-      let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
-      if (!serviceVariationId && args.serviceName) {
-        serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
-      }
-      if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  const customer = await withTimeout(
+                    ensureCustomerByPhoneOrEmail({
+                      givenName: args.customerGivenName,
+                      phone: args.customerPhone,
+                      email: args.customerEmail
+                    }),
+                    5000, 'ensureCustomerByPhoneOrEmail'
+                  );
 
-      const customer = await ensureCustomerByPhoneOrEmail({
-        givenName: args.customerGivenName,
-        phone: args.customerPhone,
-        email: args.customerEmail
-      });
+                  const booking = await withTimeout(
+                    createBooking({
+                      locationId,
+                      teamMemberId,
+                      customerId: customer?.id,
+                      serviceVariationId,
+                      startAt: args.startAt,
+                      sellerNote: args.note || undefined
+                    }),
+                    8000, 'createBooking'
+                  );
 
-      const booking = await createBooking({
-        locationId,
-        teamMemberId,
-        customerId: customer?.id,
-        serviceVariationId,
-        startAt: args.startAt,
-        sellerNote: args.note || undefined
-      });
+                  toolResult = { ok: true, booking };
+                }
 
-      toolResult = { ok: true, booking };
-    }
+                if (name === 'square_find_booking') {
+                  const tz = tenantRef?.timezone || 'America/Detroit';
+                  let startAt = args.startAt || null;
+                  let endAt = args.endAt || null;
+                  if (args.date && (!startAt || !endAt)) {
+                    const win = dayWindowUTC(args.date);
+                    startAt = startAt || win.startAt;
+                    endAt = endAt || win.endAt;
+                  }
 
-    if (name === 'square_find_booking') {
-      const tz = tenantRef?.timezone || 'America/Detroit';
-      let startAt = args.startAt || null;
-      let endAt = args.endAt || null;
-      if (args.date && (!startAt || !endAt)) {
-        const win = dayWindowUTC(args.date);
-        startAt = startAt || win.startAt;
-        endAt = endAt || win.endAt;
-      }
+                  const ids = await withTimeout(
+                    resolveCustomerIds({
+                      email: args.email,
+                      phone: args.phone,
+                      givenName: args.name, // treat name as givenName fallback
+                      familyName: undefined
+                    }),
+                    5000, 'resolveCustomerIds'
+                  );
 
-      const customerIds = await resolveCustomerIds({
-        email: args.email,
-        phone: args.phone,
-        name: args.name
-      });
+                  if (!ids.length) {
+                    toolResult = { ok: false, error: 'No matching customer found.' };
+                  } else {
+                    // Use the convenience helper that you already have in square.js
+                    const { bookings } = await withTimeout(
+                      lookupUpcomingBookingsByPhoneOrEmail({
+                        phone: args.phone,
+                        email: args.email,
+                        givenName: args.name,
+                        familyName: undefined,
+                        locationId,
+                        teamMemberId,
+                        includePast: true // caller might ask about past/tomorrow/etc.
+                      }),
+                      8000, 'lookupUpcomingBookingsByPhoneOrEmail'
+                    );
 
-      if (!customerIds.length) {
-        toolResult = { ok: false, error: 'No matching customer found.' };
-      } else {
-        const bookings = await searchBookingsByCustomer({
-          customerIds,
-          locationId,
-          teamMemberId,
-          startAt,
-          endAt
-        });
+                    // Constrain to window if provided
+                    const filtered = (startAt && endAt)
+                      ? bookings.filter(b => b.startAt >= startAt && b.startAt <= endAt)
+                      : bookings;
 
-        bookings.sort((a, b) => new Date(a.startAt || a.start_at) - new Date(b.startAt || b.start_at));
-        const formatted = bookings.slice(0, 10).map(b => {
-          const startIso = b.startAt || b.start_at;
-          return {
-            bookingId: b.id,
-            startAt: startIso,
-            spoken: speakTime(startIso, tz),
-            locationId: b.locationId || b.location_id,
-            customerId: b.customerId || b.customer_id,
-            segments: (b.appointmentSegments || b.appointment_segments || []).map(s => ({
-              serviceVariationId: s.serviceVariationId || s.service_variation_id,
-              durationMinutes: s.durationMinutes ?? s.duration_minutes ?? null
-            }))
-          };
-        });
-        toolResult = { ok: true, bookings: formatted };
-      }
-    }
+                    filtered.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+                    const formatted = filtered.slice(0, 10).map(b => ({
+                      bookingId: b.id,
+                      startAt: b.startAt,
+                      spoken: speakTime(b.startAt, tz),
+                      locationId: b.locationId,
+                      customerId: b.customerId,
+                      segments: (b.appointmentSegments || []).map(s => ({
+                        serviceVariationId: s.serviceVariationId,
+                        durationMinutes: s.durationMinutes ?? null
+                      }))
+                    }));
+                    toolResult = { ok: true, bookings: formatted };
+                  }
+                }
 
-    if (name === 'square_cancel_booking') {
-      let booking = null;
-      if (args.bookingId) {
-        booking = await retrieveBooking({ bookingId: args.bookingId });
-      } else {
-        const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
-        let startAt, endAt;
-        if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
-        const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
-        found.sort((a, b) => new Date(a.startAt || a.start_at) - new Date(b.startAt || b.start_at));
-        booking = found[0] || null;
-      }
+                if (name === 'square_cancel_booking') {
+                  let booking = null;
+                  if (args.bookingId) {
+                    booking = await withTimeout(
+                      retrieveBooking(args.bookingId), // correct signature
+                      6000, 'retrieveBooking'
+                    );
+                  } else {
+                    const ids = await withTimeout(
+                      resolveCustomerIds({ email: args.email, phone: args.phone, givenName: args.name, familyName: undefined }),
+                      5000, 'resolveCustomerIds'
+                    );
+                    let startAt, endAt;
+                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+                    const { bookings } = await withTimeout(
+                      lookupUpcomingBookingsByPhoneOrEmail({
+                        phone: args.phone,
+                        email: args.email,
+                        givenName: args.name,
+                        familyName: undefined,
+                        locationId,
+                        teamMemberId,
+                        includePast: true
+                      }),
+                      8000, 'lookupUpcomingBookingsByPhoneOrEmail'
+                    );
+                    const narrowed = (startAt && endAt)
+                      ? bookings.filter(b => b.startAt >= startAt && b.startAt <= endAt)
+                      : bookings;
+                    narrowed.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+                    booking = narrowed[0] || null;
+                  }
 
-      if (!booking) throw new Error('No matching booking found to cancel.');
-      const version = booking.version;
-      const cancelled = await cancelBooking({ bookingId: booking.id, version });
-      toolResult = { ok: true, booking: { bookingId: cancelled.id, startAt: cancelled.startAt || cancelled.start_at, status: 'CANCELLED' } };
-    }
+                  if (!booking) throw new Error('No matching booking found to cancel.');
+                  const cancelled = await withTimeout(
+                    cancelBooking({ bookingId: booking.id, version: booking.version }),
+                    8000, 'cancelBooking'
+                  );
+                  toolResult = { ok: true, booking: { bookingId: cancelled.id, startAt: cancelled.startAt, status: 'CANCELLED' } };
+                }
 
-    if (name === 'square_reschedule_booking') {
-      if (!args.newStartAt) throw new Error('newStartAt is required.');
+                if (name === 'square_reschedule_booking') {
+                  if (!args.newStartAt) throw new Error('newStartAt is required.');
 
-      let booking = null;
-      if (args.bookingId) {
-        booking = await retrieveBooking({ bookingId: args.bookingId });
-      } else {
-        const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
-        let startAt, endAt;
-        if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
-        const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
-        found.sort((a, b) => new Date(a.startAt || a.start_at) - new Date(b.startAt || b.start_at));
-        booking = found[0] || null;
-      }
+                  let booking = null;
+                  if (args.bookingId) {
+                    booking = await withTimeout(
+                      retrieveBooking(args.bookingId), // correct signature
+                      6000, 'retrieveBooking'
+                    );
+                  } else {
+                    const ids = await withTimeout(
+                      resolveCustomerIds({ email: args.email, phone: args.phone, givenName: args.name, familyName: undefined }),
+                      5000, 'resolveCustomerIds'
+                    );
+                    let startAt, endAt;
+                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+                    const { bookings } = await withTimeout(
+                      lookupUpcomingBookingsByPhoneOrEmail({
+                        phone: args.phone,
+                        email: args.email,
+                        givenName: args.name,
+                        familyName: undefined,
+                        locationId,
+                        teamMemberId,
+                        includePast: true
+                      }),
+                      8000, 'lookupUpcomingBookingsByPhoneOrEmail'
+                    );
+                    const narrowed = (startAt && endAt)
+                      ? bookings.filter(b => b.startAt >= startAt && b.startAt <= endAt)
+                      : bookings;
+                    narrowed.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+                    booking = narrowed[0] || null;
+                  }
 
-      if (!booking) throw new Error('No matching booking found to reschedule.');
-      const updated = await rescheduleBooking({ bookingId: booking.id, newStartAt: args.newStartAt });
-      toolResult = { ok: true, booking: { bookingId: updated.id, startAt: updated.startAt || updated.start_at, status: 'RESCHEDULED' } };
-    }
-  } catch (e) {
-    toolResult = { ok: false, error: String(e?.message || e) };
-    app.log.error({ toolError: toolResult }, 'Tool error');
-  }
+                  if (!booking) throw new Error('No matching booking found to reschedule.');
+                  const updated = await withTimeout(
+                    rescheduleBooking({ bookingId: booking.id, newStartAt: args.newStartAt }),
+                    8000, 'rescheduleBooking'
+                  );
+                  toolResult = { ok: true, booking: { bookingId: updated.id, startAt: updated.startAt, status: 'RESCHEDULED' } };
+                }
+              } catch (e) {
+                toolResult = { ok: false, error: String(e?.message || e) };
+                // Speak a graceful fallback so it never hangs
+                say(openAiWs, "Sorry — I couldn’t pull that up just now. Can I confirm the phone number or email on your profile and try again?");
+              }
 
-  // Send tool result back so the model can continue
-  openAiWs.send(JSON.stringify({
-    type: 'response.function_call_output',
-    call_id,
-    output: JSON.stringify(toolResult)
-  }));
-
-  // **Nudge the model to speak a follow-up out loud** (success or error)
-  openAiWs.send(JSON.stringify({
-    type: 'response.create',
-    response: {
-      instructions: toolResult?.ok
-        ? 'Explain the result for the caller clearly and briefly.'
-        : 'Apologize briefly, say what went wrong, and ask the caller for the phone or email on the appointment.'
-    }
-  }));
-  return;
-}
+              // return tool result to model
+              openAiWs.send(JSON.stringify({
+                type: 'response.function_call_output',
+                call_id,
+                output: JSON.stringify(toolResult)
+              }));
+              return;
+            }
 
             // Normal content logs
             if (msg.type === 'response.content.done') {
