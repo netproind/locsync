@@ -141,6 +141,8 @@ BOOKING
 - ${spokenBookingHint}
 - For availability and booking, use the Square tools; do not guess times.
 - If the caller gives a day/time window, first call square_search_availability, then offer 2–3 nearest slots; after they pick, call square_create_booking.
+- If the caller asks whether they already have an appointment, call square_lookup_booking. If you don’t have a phone or email, politely ask for the phone number first; if they don’t know, ask for first and last name.
+- Speak the date and time clearly; do not offer to text or email.
 
 SERVICES
 - ${services.join(', ')}
@@ -372,6 +374,46 @@ fastify.register(async function (app) {
 
                   toolResult = { ok: true, slots };
                 }
+
+                if (name === 'square_lookup_booking') {
+  const { locationId, teamMemberId } = sqDefaults();
+  const toUsePhone = args.customerPhone || null;
+  const toUseEmail = args.customerEmail || null;
+  const toUseGiven = args.customerGivenName || null;
+  const toUseFamily = args.customerFamilyName || null;
+
+  try {
+    const { customer, bookings } = await lookupUpcomingBookingsByPhoneOrEmail({
+      phone: toUsePhone,
+      email: toUseEmail,
+      givenName: toUseGiven,
+      familyName: toUseFamily,
+      locationId,
+      teamMemberId,
+      includePast: !!args.includePast
+    });
+
+    toolResult = {
+      ok: true,
+      customer: customer ? {
+        id: customer.id,
+        givenName: customer.givenName,
+        familyName: customer.familyName,
+        phone: customer.phoneNumber,
+        email: customer.emailAddress
+      } : null,
+      bookings: (bookings || []).map(b => ({
+        id: b.id,
+        startAt: b.startAt,
+        locationId: b.locationId,
+        status: b.status
+      }))
+    };
+  } catch (err) {
+    app.log.error({ err }, 'square_lookup_booking failed');
+    toolResult = { ok: false, error: String(err?.message || err) };
+  }
+}
 
                 if (name === 'square_create_booking') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
