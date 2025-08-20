@@ -6,7 +6,7 @@ const BASE = isProd
   ? 'https://connect.squareup.com'
   : 'https://connect.squareupsandbox.com';
 
-// Square-Version must be a valid release date (kept current).
+// Square-Version must be a valid release date.
 const SQUARE_VERSION = '2025-07-17';
 
 function authHeaders() {
@@ -44,25 +44,12 @@ export async function listLocations() {
   return out?.locations || [];
 }
 
-// Customers
+// ---------- Customers ----------
+
+/** Create-or-get customer (used for making bookings) */
 export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) {
-  // Search by email
-  if (email) {
-    const found = await api('/v2/customers/search', {
-      method: 'POST',
-      body: { query: { filter: { emailAddress: { exact: email } } } }
-    });
-    if (found?.customers?.[0]) return found.customers[0];
-  }
-  // Search by phone
-  if (phone) {
-    const found = await api('/v2/customers/search', {
-      method: 'POST',
-      body: { query: { filter: { phoneNumber: { exact: phone } } } }
-    });
-    if (found?.customers?.[0]) return found.customers[0];
-  }
-  // Create
+  const existing = await findCustomerByPhoneOrEmail({ phone, email });
+  if (existing) return existing;
   const created = await api('/v2/customers', {
     method: 'POST',
     body: {
@@ -74,13 +61,34 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   return created.customer;
 }
 
-// Find a service variation id by service name (Appointments Service)
+/** Lookup only (does NOT create) */
+export async function findCustomerByPhoneOrEmail({ phone, email }) {
+  // Search by email first (if provided)
+  if (email) {
+    const found = await api('/v2/customers/search', {
+      method: 'POST',
+      body: { query: { filter: { emailAddress: { exact: email } } } }
+    });
+    if (found?.customers?.[0]) return found.customers[0];
+  }
+  // Then by phone
+  if (phone) {
+    const found = await api('/v2/customers/search', {
+      method: 'POST',
+      body: { query: { filter: { phoneNumber: { exact: phone } } } }
+    });
+    if (found?.customers?.[0]) return found.customers[0];
+  }
+  return null;
+}
+
+// ---------- Catalog / Services ----------
+
 export async function findServiceVariationIdByName({ serviceName }) {
   const out = await api('/v2/catalog/search-catalog-items', {
     method: 'POST',
     body: {
       textFilter: serviceName,
-      // Narrow to appointment services
       productTypes: ['APPOINTMENTS_SERVICE']
     }
   });
@@ -94,7 +102,6 @@ export async function findServiceVariationIdByName({ serviceName }) {
   return null;
 }
 
-// Needed by createBooking (Square requires the service variation version)
 async function getServiceVariationVersion(serviceVariationId) {
   const out = await api(`/v2/catalog/object/${serviceVariationId}?include_related_objects=false`, {
     method: 'GET'
@@ -102,7 +109,8 @@ async function getServiceVariationVersion(serviceVariationId) {
   return out?.object?.version ?? null;
 }
 
-// Availability
+// ---------- Availability / Bookings ----------
+
 export async function searchAvailability({
   locationId,
   teamMemberId,
@@ -130,7 +138,6 @@ export async function searchAvailability({
   return out?.availabilities || [];
 }
 
-// Create booking
 export async function createBooking({
   locationId,
   teamMemberId,
@@ -164,7 +171,6 @@ export async function createBooking({
   return out.booking;
 }
 
-// Cancel booking (not used yet, but handy)
 export async function cancelBooking({ bookingId, version }) {
   const out = await api(`/v2/bookings/${bookingId}/cancel`, {
     method: 'POST',
@@ -173,11 +179,69 @@ export async function cancelBooking({ bookingId, version }) {
   return out.booking;
 }
 
-// Team search (if you need to discover team member IDs programmatically)
-export async function searchTeamMembers() {
-  const out = await api('/v2/team-members/search', {
-    method: 'POST',
-    body: {}
+/** ---- NEW: simple booking lookup by customer ---- **/
+
+/**
+ * List bookings via GET /v2/bookings with filters.
+ * Filters supported by Square include: customer_id, team_member_id, location_id,
+ * start_at_min, start_at_max, limit, cursor, status.
+ */
+export async function listBookings({
+  customerId,
+  teamMemberId,
+  locationId,
+  startAtMin,
+  startAtMax,
+  status, // e.g., "ACCEPTED", "CANCELLED"
+  limit = 50,
+  cursor
+}) {
+  const params = new URLSearchParams();
+  if (customerId)  params.set('customer_id', customerId);
+  if (teamMemberId) params.set('team_member_id', teamMemberId);
+  if (locationId)  params.set('location_id', locationId);
+  if (startAtMin)  params.set('start_at_min', startAtMin);
+  if (startAtMax)  params.set('start_at_max', startAtMax);
+  if (status)      params.set('status', status);
+  if (limit)       params.set('limit', String(limit));
+  if (cursor)      params.set('cursor', cursor);
+
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const out = await api(`/v2/bookings${qs}`, { method: 'GET' });
+  return {
+    bookings: out?.bookings || [],
+    cursor: out?.cursor || null
+  };
+}
+
+/**
+ * Find the next upcoming booking for a customer (by phone/email).
+ * If none upcoming, returns empty array (or past if includePast=true).
+ */
+export async function lookupUpcomingBookingsByPhoneOrEmail({
+  phone,
+  email,
+  locationId,       // optional filter
+  teamMemberId,     // optional filter
+  includePast = false
+}) {
+  const customer = await findCustomerByPhoneOrEmail({ phone, email });
+  if (!customer?.id) {
+    return { customer: null, bookings: [] };
+  }
+
+  // Query window: from "now" forward (UTC ISO) for upcoming
+  const nowIso = new Date().toISOString();
+  const { bookings } = await listBookings({
+    customerId: customer.id,
+    locationId,
+    teamMemberId,
+    startAtMin: includePast ? undefined : nowIso,
+    status: 'ACCEPTED',
+    limit: 100
   });
-  return out?.teamMembers || [];
+
+  // Sort by startAt ascending
+  bookings.sort((a, b) => (a.startAt || '').localeCompare(b.startAt || ''));
+  return { customer, bookings };
 }
