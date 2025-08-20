@@ -1,46 +1,42 @@
-// square.js — Square SDK helpers (Node 20, ESM)
-// Works with new Square SDK (SquareClient) and falls back to old (Client).
+// square.js — REST-only implementation (no SDK), Node 20 ESM
+// Works with either sandbox or production via SQUARE_ENV + SQUARE_ACCESS_TOKEN.
 
-import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 
-const require = createRequire(import.meta.url);
-const squarePkg = require('square'); // robust for CJS
-
-// Handle both old and new SDK names
-const SquareClient =
-  squarePkg?.SquareClient ||
-  squarePkg?.Client ||
-  squarePkg?.default?.SquareClient ||
-  squarePkg?.default?.Client;
-
-if (!SquareClient) {
-  throw new Error('Square SDK: could not find SquareClient/Client export from "square" package.');
-}
-
-// === Base URL by env name (skip Environment enum entirely) ===================
 const envName = (process.env.SQUARE_ENV || 'sandbox').toLowerCase();
-const baseUrl =
+const BASE_URL =
   envName === 'production'
     ? 'https://connect.squareup.com'
     : 'https://connect.squareupsandbox.com';
 
-if (!process.env.SQUARE_ACCESS_TOKEN) {
+const TOKEN = process.env.SQUARE_ACCESS_TOKEN;
+if (!TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
-// === Client ==================================================================
-export const square = new SquareClient({
-  // New SDK expects `token` + `baseUrl`
-  token: process.env.SQUARE_ACCESS_TOKEN,
-  baseUrl
-});
+const SQUARE_VERSION = '2025-05-15'; // safe recent version; adjust if needed
 
-// Convenience APIs
-const locationsApi = square.locationsApi;
-const bookingsApi  = square.bookingsApi;
-const customersApi = square.customersApi;
-const catalogApi   = square.catalogApi;
+async function sqFetch(path, { method = 'GET', body } = {}) {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      'Square-Version': SQUARE_VERSION,
+      'Content-Type': 'application/json'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+
+  const text = await res.text();
+  let json;
+  try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
+
+  if (!res.ok) {
+    const msg = json?.errors?.[0]?.detail || json?.errors?.[0]?.code || res.statusText || 'Square error';
+    throw new Error(`Square API ${method} ${path} failed: ${msg}`);
+  }
+  return json;
+}
 
 // ---------- small utils ----------
 function onlyDigits(s = '') {
@@ -57,35 +53,33 @@ function toE164US(phone) {
 
 // ---------- Locations ----------
 export async function listLocations() {
-  const { result } = await locationsApi.listLocations();
-  return result?.locations || [];
+  const { locations = [] } = await sqFetch('/v2/locations', { method: 'GET' });
+  return locations;
 }
 
 // ---------- Customers ----------
 export async function findCustomer({ phone, email, givenName, familyName }) {
-  // exact email
+  // try exact email
   if (email) {
-    const { result } = await customersApi.searchCustomers({
-      // NOTE: new filter keys are snake_case
-      query: { filter: { email_address: { exact: String(email).trim() } } }
-    });
-    if (result?.customers?.[0]) return result.customers[0];
+    const body = { query: { filter: { email_address: { exact: String(email).trim() } } } };
+    const { customers = [] } = await sqFetch('/v2/customers/search', { method: 'POST', body });
+    if (customers[0]) return customers[0];
   }
-  // exact phone (E.164)
+  // try exact phone (E.164)
   if (phone) {
     const e164 = toE164US(phone);
-    const { result } = await customersApi.searchCustomers({
-      query: { filter: { phone_number: { exact: e164 } } }
-    });
-    if (result?.customers?.[0]) return result.customers[0];
+    const body = { query: { filter: { phone_number: { exact: e164 } } } };
+    const { customers = [] } = await sqFetch('/v2/customers/search', { method: 'POST', body });
+    if (customers[0]) return customers[0];
   }
-  // fuzzy by name
+  // fuzzy name search (given or family)
   if (givenName || familyName) {
     const filter = {};
     if (givenName)  filter.given_name  = { fuzzy: String(givenName).trim() };
     if (familyName) filter.family_name = { fuzzy: String(familyName).trim() };
-    const { result } = await customersApi.searchCustomers({ query: { filter } });
-    if (result?.customers?.[0]) return result.customers[0];
+    const body = { query: { filter } };
+    const { customers = [] } = await sqFetch('/v2/customers/search', { method: 'POST', body });
+    if (customers[0]) return customers[0];
   }
   return null;
 }
@@ -94,18 +88,19 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   const existing = await findCustomer({ phone, email });
   if (existing) return existing;
 
-  const body = { givenName: givenName || 'Caller' };
-  if (email) body.emailAddress = String(email).trim();
-  if (phone) body.phoneNumber  = toE164US(phone);
-
-  const { result } = await customersApi.createCustomer(body);
-  return result?.customer || null;
+  const body = {
+    givenName: givenName || 'Caller',
+    ...(email ? { emailAddress: String(email).trim() } : {}),
+    ...(phone ? { phoneNumber: toE164US(phone) } : {})
+  };
+  const { customer } = await sqFetch('/v2/customers', { method: 'POST', body });
+  return customer || null;
 }
 
 // ---------- Catalog (services) ----------
 export async function findServiceVariationIdByName({ serviceName }) {
-  const { result } = await catalogApi.searchCatalogItems({ textFilter: serviceName });
-  const items = result?.items || [];
+  const body = { textFilter: serviceName };
+  const { items = [] } = await sqFetch('/v2/catalog/search-catalog-items', { method: 'POST', body });
   for (const item of items) {
     if (item?.productType === 'APPOINTMENTS_SERVICE') {
       const vars = item?.itemData?.variations || [];
@@ -116,8 +111,8 @@ export async function findServiceVariationIdByName({ serviceName }) {
 }
 
 async function getServiceVariationVersion(serviceVariationId) {
-  const { result } = await catalogApi.retrieveCatalogObject(serviceVariationId, false);
-  return result?.object?.version ?? null;
+  const { object } = await sqFetch(`/v2/catalog/object/${encodeURIComponent(serviceVariationId)}?include_related_objects=false`, { method: 'GET' });
+  return object?.version ?? null;
 }
 
 // ---------- Availability & Bookings ----------
@@ -128,7 +123,8 @@ export async function searchAvailability({
   startAt,
   endAt
 }) {
-  const { result } = await bookingsApi.searchAvailability({
+  // Endpoint: POST /v2/bookings/availability/search
+  const body = {
     query: {
       filter: {
         locationId,
@@ -141,8 +137,9 @@ export async function searchAvailability({
         startAtRange: { startAt, endAt }
       }
     }
-  });
-  return result?.availabilities || [];
+  };
+  const { availabilities = [] } = await sqFetch('/v2/bookings/availability/search', { method: 'POST', body });
+  return availabilities;
 }
 
 export async function createBooking({
@@ -168,16 +165,16 @@ export async function createBooking({
           serviceVariationId,
           serviceVariationVersion,
           teamMemberId
-          // duration is derived from the service variation configuration
+          // duration is derived from service variation configuration
         }
       ],
-      sellerNote
+      ...(sellerNote ? { sellerNote } : {})
     },
     idempotencyKey: randomUUID()
   };
 
-  const { result } = await bookingsApi.createBooking(body);
-  return result?.booking || null;
+  const { booking } = await sqFetch('/v2/bookings', { method: 'POST', body });
+  return booking || null;
 }
 
 export async function lookupUpcomingBookingsByPhoneOrEmail({
@@ -199,14 +196,12 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
   if (!includePast) filter.startAtRange = { startAt: nowIso };
 
   const body = { query: { filter, sort: { sortField: 'START_AT', order: 'ASC' } } };
-  const { result } = await bookingsApi.searchBookings(body);
-  const bookings = result?.bookings || [];
-
+  const { bookings = [] } = await sqFetch('/v2/bookings/search', { method: 'POST', body });
   return { customer, bookings };
 }
 
-// Optional
 export async function cancelBooking({ bookingId, version }) {
-  const { result } = await bookingsApi.cancelBooking(bookingId, { version });
-  return result?.booking || null;
+  const body = { version };
+  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', body });
+  return booking || null;
 }
