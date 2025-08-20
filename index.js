@@ -7,11 +7,9 @@ import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
-
 import { DateTime } from 'luxon';
 
 import {
-  // Square helpers from ./square.js (must exist there)
   listLocations,
   searchAvailability,
   createBooking,
@@ -24,18 +22,6 @@ import {
   cancelBooking
 } from './square.js';
 
-import { DateTime } from 'luxon';
-
-function speakTime(iso, tz = 'America/Detroit') {
-  if (!iso) return '';
-  // If the ISO string has a zone/offset, respect it. Otherwise assume tenant tz.
-  let dt = DateTime.fromISO(iso, { setZone: true });
-  if (!dt.isValid || !dt.zoneName) {
-    dt = DateTime.fromISO(iso, { zone: tz });
-  }
-  const local = dt.toZone(tz);
-  return local.toFormat("cccc, LLLL d 'at' h:mm a");
-}
 // ---------- ENV ----------
 dotenv.config();
 const { OPENAI_API_KEY, NODE_ENV } = process.env;
@@ -107,7 +93,7 @@ async function fetchKbText(urls = []) {
       if (!res.ok) continue;
       let txt = await res.text();
       const cap = currentKbCap || DEFAULTS.kb_per_file_char_cap;
-      txt = txt.slice(0, cap); // per-file cap
+      txt = txt.slice(0, cap);
       kbCache.set(url, txt);
       combined += '\n\n' + txt;
     } catch {
@@ -124,9 +110,8 @@ function sqDefaults() {
   };
 }
 
-// ---------- DATE/TIME SPEECH HELPERS ----------
+// ---------- DATE/TIME HELPERS ----------
 function dayWindowUTC(isoDate) {
-  // Build UTC 00:00..23:59:59 window for the given date string (YYYY-MM-DD)
   const [y, m, d] = isoDate.slice(0, 10).split('-').map(Number);
   const startAt = new Date(Date.UTC(y, m - 1, d, 0, 0, 0)).toISOString();
   const endAt = new Date(Date.UTC(y, m - 1, d, 23, 59, 59)).toISOString();
@@ -134,15 +119,10 @@ function dayWindowUTC(isoDate) {
 }
 
 function speakTime(iso, tz = 'America/Detroit') {
-  const dt = new Date(iso);
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit'
-  }).format(dt);
+  if (!iso) return '';
+  let dt = DateTime.fromISO(iso, { setZone: true });
+  if (!dt.isValid || !dt.zoneName) dt = DateTime.fromISO(iso, { zone: tz });
+  return dt.toZone(tz).toFormat("cccc, LLLL d 'at' h:mm a");
 }
 
 // ---------- INSTRUCTIONS BUILDER ----------
@@ -167,7 +147,6 @@ GROUNDING & SOURCES
 - Prefer tenant content and FAQ text below over anything else.
 - If the question is not covered or you’re uncertain: ask a brief clarifying question, then stop.
 - Never invent pricing, medical advice, or availability. If unsure, say you’ll confirm later.
-- For policies, quote exactly; if not present in the KB, say you’ll check and follow up.
 
 BOOKING (after a quote / or by request)
 - Booking link: ${booking}
@@ -175,15 +154,13 @@ BOOKING (after a quote / or by request)
 - Offer 2–3 nearest slots. After they pick, call square_create_booking.
 
 APPOINTMENT LOOKUP (find my appointment)
-- If the caller asks for their appointment time/date, ask for the phone or email on file (name as fallback).
-- If they mention a specific day, include { date: 'YYYY-MM-DD' }.
-- Call square_find_booking. If multiple bookings are found, ask which one and then read the exact date/time.
-- Never guess times. Read back clearly using the tenant timezone.
+- Ask for the phone/email on file (name as fallback). If a specific day is mentioned, include { date: 'YYYY-MM-DD' }.
+- Call square_find_booking. When 'spoken' is provided, read that exact string back as the time.
+- Never guess times; use tenant timezone.
 
 CANCEL / RESCHEDULE
-- To cancel, confirm they want to cancel, then call square_cancel_booking.
-- To reschedule, confirm a new requested day/time; check availability; then call square_reschedule_booking with the chosen new start time.
-- Always read back the result (date/time). Do not promise to text.
+- To cancel: confirm intent → square_cancel_booking → read back result.
+- To reschedule: confirm desired time, check availability, then square_reschedule_booking → read back result.
 
 SERVICES
 - ${services.join(', ')}
@@ -220,10 +197,7 @@ fastify.get('/', async (_req, reply) => {
 fastify.get('/dev/square/ping', async (_req, reply) => {
   try {
     const locations = await listLocations();
-    reply.send({
-      ok: true,
-      locations: locations.map(l => ({ id: l.id, name: l.name }))
-    });
+    reply.send({ ok: true, locations: locations.map(l => ({ id: l.id, name: l.name })) });
   } catch (e) {
     reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }
@@ -255,7 +229,7 @@ fastify.all('/incoming-call', async (request, reply) => {
 
 // Media Streams WebSocket endpoint
 fastify.register(async function (app) {
-  app.get('/media-stream', { websocket: true }, (connection /* WS */) => {
+  app.get('/media-stream', { websocket: true }, (connection) => {
     app.log.info('Twilio Media Stream connected');
 
     // -------- per-connection state --------
@@ -281,7 +255,6 @@ fastify.register(async function (app) {
       if (!openAiWs || openAiWs.readyState !== WebSocket.OPEN) return;
       if (!(openAiReady && tenantReady)) return;
 
-      // Merge global + per-tenant overrides once
       const tenantOverrides = Array.isArray(tenantRef?.overrides) ? tenantRef.overrides : [];
       const allOverrides = [...OVERRIDES, ...tenantOverrides];
 
@@ -303,7 +276,6 @@ fastify.register(async function (app) {
           modalities: selectedMods,
           temperature: selectedTemp,
           tools: [
-            // Availability (search) + Booking (create)
             {
               type: 'function',
               name: 'square_search_availability',
@@ -311,9 +283,9 @@ fastify.register(async function (app) {
               parameters: {
                 type: 'object',
                 properties: {
-                  serviceName: { type: 'string', description: 'Friendly name, e.g. "Interlock 2-3 turns". If missing, SQUARE_DEFAULT_SERVICE_VARIATION_ID is used.' },
-                  startAt: { type: 'string', description: 'ISO 8601 start datetime, e.g. 2025-08-20T15:00:00-04:00' },
-                  endAt: { type: 'string', description: 'ISO 8601 end datetime, window to search' }
+                  serviceName: { type: 'string', description: 'Friendly name; optional if default service variation env is set.' },
+                  startAt: { type: 'string', description: 'ISO 8601 start datetime' },
+                  endAt: { type: 'string', description: 'ISO 8601 end datetime' }
                 },
                 required: ['startAt', 'endAt']
               }
@@ -325,8 +297,8 @@ fastify.register(async function (app) {
               parameters: {
                 type: 'object',
                 properties: {
-                  startAt: { type: 'string', description: 'Chosen start datetime in ISO 8601' },
-                  serviceName: { type: 'string', description: 'Service name (optional if env default is set)' },
+                  startAt: { type: 'string' },
+                  serviceName: { type: 'string' },
                   customerGivenName: { type: 'string' },
                   customerPhone: { type: 'string' },
                   customerEmail: { type: 'string' },
@@ -335,11 +307,10 @@ fastify.register(async function (app) {
                 required: ['startAt']
               }
             },
-            // Find / Cancel / Reschedule
             {
               type: 'function',
               name: 'square_find_booking',
-              description: 'Look up one or more bookings by phone, email, or name, optionally limited to a specific date or date window.',
+              description: 'Look up bookings by phone, email, or name; optional single-day or custom window.',
               parameters: {
                 type: 'object',
                 properties: {
@@ -347,15 +318,15 @@ fastify.register(async function (app) {
                   email: { type: 'string' },
                   name:  { type: 'string' },
                   date:  { type: 'string', description: 'yyyy-mm-dd (tenant timezone)' },
-                  startAt: { type: 'string', description: 'ISO start of custom window' },
-                  endAt:   { type: 'string', description: 'ISO end of custom window' }
+                  startAt: { type: 'string' },
+                  endAt:   { type: 'string' }
                 }
               }
             },
             {
               type: 'function',
               name: 'square_cancel_booking',
-              description: 'Cancel a booking by bookingId, or by customer identification + optional date.',
+              description: 'Cancel a booking by bookingId, or by identifiers + optional date.',
               parameters: {
                 type: 'object',
                 properties: {
@@ -370,7 +341,7 @@ fastify.register(async function (app) {
             {
               type: 'function',
               name: 'square_reschedule_booking',
-              description: 'Reschedule a booking (change start time) by bookingId or by customer identification + date.',
+              description: 'Reschedule a booking by bookingId or identifiers + date.',
               parameters: {
                 type: 'object',
                 properties: {
@@ -379,7 +350,7 @@ fastify.register(async function (app) {
                   email: { type: 'string' },
                   name:  { type: 'string' },
                   date:  { type: 'string' },
-                  newStartAt: { type: 'string', description: 'New ISO start (e.g. 2025-08-20T15:00:00-04:00)' }
+                  newStartAt: { type: 'string', description: 'New ISO start time' }
                 },
                 required: ['newStartAt']
               }
@@ -404,7 +375,6 @@ fastify.register(async function (app) {
           const tenantKey = decodeURIComponent(data.start?.customParameters?.tenant || '');
           tenantRef = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
 
-          // choose per-tenant config (with defaults)
           chosenVoice     = tenantRef?.voice || DEFAULTS.voice;
           selectedModel   = tenantRef?.model || DEFAULTS.model;
           selectedTemp    = tenantRef?.temperature ?? DEFAULTS.temperature;
@@ -413,20 +383,17 @@ fastify.register(async function (app) {
           currentKbCap    = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
           const instrCap  = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
-          // Connect OpenAI Realtime for this call
           openAiReady = false;
           openAiWs = new WebSocket(
             `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(selectedModel)}`,
             { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
           );
 
-          // ---- OpenAI WS handlers ----
           openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate(); });
 
           openAiWs.on('message', async (buf) => {
             let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
 
-            // Tool calls
             if (msg.type === 'response.function_call') {
               const { name, arguments: argsJson, call_id } = msg;
               let toolResult = null;
@@ -440,7 +407,7 @@ fastify.register(async function (app) {
                   if (!serviceVariationId && args.serviceName) {
                     serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a matching Catalog service.');
 
                   const slots = await searchAvailability({
                     locationId,
@@ -458,7 +425,7 @@ fastify.register(async function (app) {
                   if (!serviceVariationId && args.serviceName) {
                     serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a matching Catalog service.');
 
                   const customer = await ensureCustomerByPhoneOrEmail({
                     givenName: args.customerGivenName,
@@ -481,7 +448,6 @@ fastify.register(async function (app) {
                 if (name === 'square_find_booking') {
                   const tz = tenantRef?.timezone || 'America/Detroit';
 
-                  // Build optional date window
                   let startAt = args.startAt || null;
                   let endAt   = args.endAt   || null;
                   if (args.date && (!startAt || !endAt)) {
@@ -490,7 +456,6 @@ fastify.register(async function (app) {
                     endAt   = endAt   || win.endAt;
                   }
 
-                  // Resolve customer(s) → then search
                   let givenName, familyName;
                   if (args.name) {
                     const parts = String(args.name).trim().split(/\s+/);
@@ -498,32 +463,27 @@ fastify.register(async function (app) {
                     familyName = parts.slice(1).join(' ') || undefined;
                   }
 
-                  const { bookings = [] } = await (async () => {
-                    // Use the helper that takes identifiers directly
-                    const result = await lookupUpcomingBookingsByPhoneOrEmail({
-                      phone: args.phone,
-                      email: args.email,
-                      givenName,
-                      familyName,
-                      locationId,
-                      teamMemberId,
-                      includePast: true // allow past + future
-                    });
-                    // Narrow by window if provided
-                    let list = result.bookings || [];
-                    if (startAt || endAt) {
-                      const s = startAt ? new Date(startAt).getTime() : -Infinity;
-                      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
-                      list = list.filter(b => {
-                        const t = new Date(b.start_at || b.startAt).getTime();
-                        return t >= s && t <= e;
-                      });
-                    }
-                    return { bookings: list };
-                  })();
+                  const res = await lookupUpcomingBookingsByPhoneOrEmail({
+                    phone: args.phone,
+                    email: args.email,
+                    givenName,
+                    familyName,
+                    locationId,
+                    teamMemberId,
+                    includePast: true
+                  });
 
-                  // Normalize / format
-                  const formatted = bookings
+                  let list = res.bookings || [];
+                  if (startAt || endAt) {
+                    const s = startAt ? new Date(startAt).getTime() : -Infinity;
+                    const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+                    list = list.filter(b => {
+                      const t = new Date(b.start_at || b.startAt).getTime();
+                      return t >= s && t <= e;
+                    });
+                  }
+
+                  const formatted = list
                     .map(b => {
                       const start = b.start_at || b.startAt;
                       return {
@@ -550,16 +510,14 @@ fastify.register(async function (app) {
                   if (args.bookingId) {
                     booking = await retrieveBooking(args.bookingId);
                   } else {
-                    // find the booking by identifiers + optional date
-                    const { locationId, teamMemberId } = sqDefaults();
                     let givenName, familyName;
                     if (args.name) {
                       const parts = String(args.name).trim().split(/\s+/);
                       givenName = parts[0];
                       familyName = parts.slice(1).join(' ') || undefined;
                     }
-                    let { startAt, endAt } = { startAt: null, endAt: null };
-                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+                    let w = { startAt: null, endAt: null };
+                    if (args.date) w = dayWindowUTC(args.date);
 
                     const res = await lookupUpcomingBookingsByPhoneOrEmail({
                       phone: args.phone,
@@ -572,9 +530,9 @@ fastify.register(async function (app) {
                     });
 
                     let list = res.bookings || [];
-                    if (startAt || endAt) {
-                      const s = startAt ? new Date(startAt).getTime() : -Infinity;
-                      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+                    if (w.startAt || w.endAt) {
+                      const s = w.startAt ? new Date(w.startAt).getTime() : -Infinity;
+                      const e = w.endAt   ? new Date(w.endAt).getTime()   :  Infinity;
                       list = list.filter(b => {
                         const t = new Date(b.start_at || b.startAt).getTime();
                         return t >= s && t <= e;
@@ -609,15 +567,14 @@ fastify.register(async function (app) {
                   if (args.bookingId) {
                     booking = await retrieveBooking(args.bookingId);
                   } else {
-                    const { locationId, teamMemberId } = sqDefaults();
                     let givenName, familyName;
                     if (args.name) {
                       const parts = String(args.name).trim().split(/\s+/);
                       givenName = parts[0];
                       familyName = parts.slice(1).join(' ') || undefined;
                     }
-                    let { startAt, endAt } = { startAt: null, endAt: null };
-                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+                    let w = { startAt: null, endAt: null };
+                    if (args.date) w = dayWindowUTC(args.date);
 
                     const res = await lookupUpcomingBookingsByPhoneOrEmail({
                       phone: args.phone,
@@ -630,9 +587,9 @@ fastify.register(async function (app) {
                     });
 
                     let list = res.bookings || [];
-                    if (startAt || endAt) {
-                      const s = startAt ? new Date(startAt).getTime() : -Infinity;
-                      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+                    if (w.startAt || w.endAt) {
+                      const s = w.startAt ? new Date(w.startAt).getTime() : -Infinity;
+                      const e = w.endAt   ? new Date(w.endAt).getTime()   :  Infinity;
                       list = list.filter(b => {
                         const t = new Date(b.start_at || b.startAt).getTime();
                         return t >= s && t <= e;
@@ -662,7 +619,6 @@ fastify.register(async function (app) {
                 toolResult = { ok: false, error: String(e?.message || e) };
               }
 
-              // return tool result to model
               openAiWs.send(JSON.stringify({
                 type: 'response.function_call_output',
                 call_id,
@@ -671,18 +627,16 @@ fastify.register(async function (app) {
               return;
             }
 
-            // Normal content logs
             if (msg.type === 'response.content.done') {
               const txt = (msg?.output_text || '').slice(0, 400);
               app.log.info({ preview: txt }, 'AI final text');
             }
 
-            // Audio back to Twilio
             if (msg.type === 'response.audio.delta' && msg.delta && streamSid) {
               connection.send(JSON.stringify({
                 event: 'media',
                 streamSid,
-                media: { payload: msg.delta } // base64 g711_ulaw
+                media: { payload: msg.delta }
               }));
 
               if (!responseStartTimestampTwilio) {
@@ -694,7 +648,6 @@ fastify.register(async function (app) {
               markQueue.push('responsePart');
             }
 
-            // Caller barged in — truncate assistant audio
             if (msg.type === 'input_audio_buffer.speech_started') {
               if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
                 if (lastAssistantItem) {
@@ -716,7 +669,6 @@ fastify.register(async function (app) {
           openAiWs.on('error', (err) => app.log.error({ err }, 'OpenAI WS error'));
           openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
 
-          // load KB and build instructions (use a single instrCap variable)
           let kbText = '';
           if (tenantRef?.faq_urls?.length) {
             kbText = await fetchKbText(tenantRef.faq_urls);
@@ -735,7 +687,7 @@ fastify.register(async function (app) {
           if (openAiWs && openAiWs.readyState === WebSocket.OPEN) {
             openAiWs.send(JSON.stringify({
               type: 'input_audio_buffer.append',
-              audio: data.media?.payload // base64 g711_ulaw
+              audio: data.media?.payload
             }));
           }
           break;
