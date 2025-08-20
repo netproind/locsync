@@ -29,7 +29,7 @@ if (!OPENAI_API_KEY) {
 const DEFAULTS = {
   voice: 'alloy',
   model: 'gpt-4o-realtime-preview-2024-10-01',
-  temperature: 0.7,
+  temperature: 0.2, // ↓ reduce “creativity” to avoid guessing
   modalities: ['text', 'audio'],
   turn_detection: { type: 'server_vad' },
   kb_per_file_char_cap: 10000,
@@ -105,7 +105,7 @@ function sqDefaults() {
   };
 }
 
-// ---------- INSTRUCTIONS BUILDER (no texting; speak links aloud) ----------
+// ---------- INSTRUCTIONS BUILDER (no texting; must use lookup tool) ----------
 function buildInstructions(tenant, kbText = '') {
   const style    = tenant?.voice_style || 'warm, professional, concise';
   const services = Array.isArray(tenant?.services) ? tenant.services : [];
@@ -122,26 +122,35 @@ function buildInstructions(tenant, kbText = '') {
     ? '(booking link not set)'
     : `When reading this aloud, say it slowly and clearly. If it has slashes/underscores, read them out, e.g., "locrepair dot com slash service underscore portal".`;
 
+  // Two tiny example dialogues to strongly bias tool usage
+  const examples = `
+EXAMPLES (STRICTLY FOLLOW):
+User: "Do I have an appointment tomorrow? My number is 313-488-4898."
+Assistant: "Let me check your appointment. One moment." → CALL square_lookup_booking with customerPhone="+13134884898". If found, SPEAK date/time; if not found, say you couldn't verify.
+
+User: "What's my time on Friday? I think it's under yesha@example.com."
+Assistant: "I'll verify that for you." → CALL square_lookup_booking with customerEmail="yesha@example.com". If found, SPEAK date/time; if not found, ask for phone or full name and re-check.
+`.trim();
+
   return (
 `You are the voice receptionist for "${studio}".
 Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 seconds.
 
-HARD RULES ABOUT COMMUNICATION
-- Do NOT offer to text or email anything. Never say you'll send a link or message.
-- Always provide information verbally. If a caller asks for a link, read it aloud slowly and clearly.
-- If you need to repeat, repeat calmly and slowly.
-- If you aren't sure of an answer, ask a brief clarifying question. Do not promise to follow up by text/email.
+HARD RULES
+- DO NOT offer to text or email anything. Never say you'll send a link or message.
+- ALWAYS provide information verbally and clearly.
+- DO NOT answer any question about an existing appointment (e.g., "Do I have one?", "What time is it?") UNLESS you first CALL the function square_lookup_booking and use its results.
+- If you lack phone/email, ask for the phone number first; if they don’t know it, ask for first and last name. Then CALL square_lookup_booking.
+- If square_lookup_booking returns no match, say you couldn't verify any appointment with that info and ask to try a different phone/email/name. Do NOT guess.
 
 GROUNDING & SOURCES
 - Prefer tenant content and FAQ text below over anything else.
-- Never invent pricing, medical advice, or availability. If unsure, say you’ll check with the team.
+- Never invent pricing, medical advice, or availability. If unsure, ask a brief clarifying question.
 
 BOOKING
 - Booking link: ${booking}
 - ${spokenBookingHint}
-- For availability and booking, use the Square tools; do not guess times.
-- If the caller gives a day/time window, first call square_search_availability, then offer 2–3 nearest slots; after they pick, call square_create_booking.
-- If the caller asks whether they already have an appointment, call square_lookup_booking. If you don’t have a phone or email, ask for the phone number first; if they don’t know, ask for first and last name. Speak the result clearly; do not offer to text or email.
+- For new appointments: first CALL square_search_availability when the caller gives a day/time window; offer 2–3 nearest slots; after they pick, CALL square_create_booking.
 
 SERVICES
 - ${services.join(', ')}
@@ -157,6 +166,8 @@ ${canonical}
 
 TENANT FAQ TEXT (preferred over external knowledge):
 ${kbText || '(none)'}
+
+${examples}
 
 SAFETY
 - Do not give medical advice; recommend seeing a dermatologist if asked.
@@ -320,7 +331,7 @@ fastify.register(async function (app) {
               parameters: {
                 type: 'object',
                 properties: {
-                  customerPhone: { type: 'string', description: 'E.164 like +13135551234 or US 10 digits; other punctuation allowed.' },
+                  customerPhone: { type: 'string', description: 'E.164 like +13135551234 or US 10 digits; punctuation allowed.' },
                   customerEmail: { type: 'string', description: 'Customer email (case-insensitive).' },
                   customerGivenName: { type: 'string', description: 'First name, if provided instead of phone/email.' },
                   customerFamilyName: { type: 'string', description: 'Last name, optional for disambiguation.' },
@@ -366,14 +377,9 @@ fastify.register(async function (app) {
           // ---- OpenAI WS handlers ----
           openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate(); });
 
-          // ---------- REPLACED message handler with catch + logging ----------
           openAiWs.on('message', async (buf) => {
             let msg; 
-            try { 
-              msg = JSON.parse(buf.toString()); 
-            } catch { 
-              return; 
-            }
+            try { msg = JSON.parse(buf.toString()); } catch { return; }
 
             // 1) TOOL / FUNCTION CALLS FROM REALTIME
             if (msg.type === 'response.function_call') {
@@ -531,7 +537,6 @@ fastify.register(async function (app) {
               }
             }
           });
-          // ---------- END replaced message handler ----------
 
           openAiWs.on('error', (err) => app.log.error({ err }, 'OpenAI WS error'));
           openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
