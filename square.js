@@ -223,3 +223,49 @@ export async function cancelBooking({ bookingId, version }) {
   const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', body });
   return booking || null;
 }
+// --- add below your other exports in square.js ---
+
+// Retrieve a single booking so we can get its current version & segments
+export async function retrieveBooking(bookingId) {
+  if (!bookingId) throw new Error('retrieveBooking: bookingId is required');
+  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}`, { method: 'GET' });
+  return booking || null;
+}
+
+// Reschedule (update startAt) while preserving service/team/segment info.
+export async function rescheduleBooking({ bookingId, newStartAt }) {
+  if (!bookingId) throw new Error('rescheduleBooking: bookingId is required');
+  if (!newStartAt) throw new Error('rescheduleBooking: newStartAt (ISO) is required');
+
+  // Get the current booking to read version and existing segments
+  const current = await retrieveBooking(bookingId);
+  if (!current) throw new Error(`Booking not found: ${bookingId}`);
+
+  // Build a minimal “booking” object Square accepts for update
+  // Keep the same segments and team/service info, just change startAt (and include version).
+  const booking = {
+    id: current.id,
+    version: current.version,                       // required for optimistic locking
+    locationId: current.locationId,
+    customerId: current.customerId || undefined,
+    startAt: newStartAt,
+    appointmentSegments: (current.appointmentSegments || []).map(seg => ({
+      serviceVariationId: seg.serviceVariationId,
+      serviceVariationVersion: seg.serviceVariationVersion,
+      teamMemberId: seg.teamMemberId
+      // duration is derived from the service variation; don’t set here
+    }))
+  };
+
+  const body = {
+    idempotencyKey: randomUUID(),
+    booking
+  };
+
+  // PUT /v2/bookings/{booking_id}
+  const { booking: updated } = await sqFetch(
+    `/v2/bookings/${encodeURIComponent(bookingId)}`,
+    { method: 'PUT', body }
+  );
+  return updated || null;
+}
