@@ -1,20 +1,37 @@
 // square.js — Square SDK helpers (ESM, Node 20)
-// Works with "square" SDK v43+ (CommonJS package used via default import)
+// Compatible with SDKs that export either `Environment` (Production/Sandbox)
+// or `environments` (production/sandbox).
 
 import squarePkg from 'square';
 import { randomUUID } from 'node:crypto';
 
-const { Client, environments } = squarePkg;
+const { Client } = squarePkg;
+const EnvironmentEnum = squarePkg.Environment;   // e.g., Environment.Production / Environment.Sandbox
+const environmentsObj = squarePkg.environments;  // e.g., environments.production / environments.sandbox
 
-// ---- Environment & Client ---------------------------------------------------
+// ---- Resolve environment regardless of SDK shape ----
 const envName = (process.env.SQUARE_ENV || 'sandbox').toLowerCase();
-const environment =
-  envName === 'production' ? environments.production : environments.sandbox;
+
+let environment;
+if (EnvironmentEnum && (EnvironmentEnum.Production || EnvironmentEnum.Sandbox)) {
+  // Old/enum style
+  environment = envName === 'production'
+    ? EnvironmentEnum.Production
+    : EnvironmentEnum.Sandbox;
+} else if (environmentsObj && (environmentsObj.production || environmentsObj.sandbox)) {
+  // New/object style
+  environment = envName === 'production'
+    ? environmentsObj.production
+    : environmentsObj.sandbox;
+} else {
+  throw new Error('Square SDK: could not locate Environment/environments export');
+}
 
 if (!process.env.SQUARE_ACCESS_TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
+// ---- Client ---------------------------------------------------------------
 export const square = new Client({
   environment,
   accessToken: process.env.SQUARE_ACCESS_TOKEN
@@ -25,42 +42,37 @@ const locationsApi = square.locationsApi;
 const bookingsApi  = square.bookingsApi;
 const customersApi = square.customersApi;
 const catalogApi   = square.catalogApi;
-const teamApi      = square.teamApi; // not used directly but kept for completeness
+const teamApi      = square.teamApi; // not directly used, kept for completeness
 
-// ---- Utils ------------------------------------------------------------------
+// ---- Utils ----------------------------------------------------------------
 function onlyDigits(s = '') {
   return String(s || '').replace(/\D+/g, '');
 }
 function toE164US(phone) {
-  // Accepts E.164, 10-digit US, or with punctuation; returns +1XXXXXXXXXX if looks US 10-digit
   const trimmed = (phone || '').trim();
-  if (/^\+/.test(trimmed)) return trimmed; // already E.164
+  if (/^\+/.test(trimmed)) return trimmed;
   const digits = onlyDigits(trimmed);
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  // Fallback: if unknown length, just prefix with + (Square may still accept if truly E.164)
   return trimmed.startsWith('+') ? trimmed : `+${digits}`;
 }
 
-// ---- Locations --------------------------------------------------------------
+// ---- Locations ------------------------------------------------------------
 export async function listLocations() {
   const { result } = await locationsApi.listLocations();
   return result?.locations || [];
 }
 
-// ---- Customers --------------------------------------------------------------
-/**
- * Finds a single customer by exact phone/email, otherwise by name.
- * Returns the first best match (you can refine later to disambiguate).
- */
+// ---- Customers ------------------------------------------------------------
 export async function findCustomer({ phone, email, givenName, familyName }) {
-  // Prefer exact phone/email lookups first (fast & precise)
+  // exact email
   if (email) {
     const { result } = await customersApi.searchCustomers({
       query: { filter: { email_address: { exact: email.trim() } } }
     });
     if (result?.customers?.[0]) return result.customers[0];
   }
+  // exact phone (E.164)
   if (phone) {
     const e164 = toE164US(phone);
     const { result } = await customersApi.searchCustomers({
@@ -68,40 +80,30 @@ export async function findCustomer({ phone, email, givenName, familyName }) {
     });
     if (result?.customers?.[0]) return result.customers[0];
   }
-
-  // Fall back to name search (fuzzy)
+  // fuzzy name
   if (givenName || familyName) {
     const filter = {};
-    if (givenName)   filter.given_name  = { fuzzy: givenName.trim() };
-    if (familyName)  filter.family_name = { fuzzy: familyName.trim() };
+    if (givenName)  filter.given_name  = { fuzzy: givenName.trim() };
+    if (familyName) filter.family_name = { fuzzy: familyName.trim() };
     const { result } = await customersApi.searchCustomers({ query: { filter } });
     if (result?.customers?.[0]) return result.customers[0];
   }
-
   return null;
 }
 
-/**
- * Ensure a customer exists; try to find by email/phone, else create.
- */
 export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) {
   const existing = await findCustomer({ phone, email });
   if (existing) return existing;
 
-  const body = {
-    givenName: givenName || 'Caller'
-  };
+  const body = { givenName: givenName || 'Caller' };
   if (email) body.emailAddress = email.trim();
-  if (phone) body.phoneNumber = toE164US(phone);
+  if (phone) body.phoneNumber  = toE164US(phone);
 
   const { result } = await customersApi.createCustomer(body);
   return result?.customer || null;
 }
 
-// ---- Catalog (Services) -----------------------------------------------------
-/**
- * Returns the first Appointments service variation id that matches text.
- */
+// ---- Catalog (Services) ----------------------------------------------------
 export async function findServiceVariationIdByName({ serviceName }) {
   const { result } = await catalogApi.searchCatalogItems({ textFilter: serviceName });
   const items = result?.items || [];
@@ -119,11 +121,7 @@ async function getServiceVariationVersion(serviceVariationId) {
   return result?.object?.version ?? null;
 }
 
-// ---- Availability & Bookings ------------------------------------------------
-/**
- * Search availability for a specific service variation, team member, and location
- * within a start/end range (ISO 8601).
- */
+// ---- Availability & Bookings ----------------------------------------------
 export async function searchAvailability({
   locationId,
   teamMemberId,
@@ -148,10 +146,6 @@ export async function searchAvailability({
   return result?.availabilities || [];
 }
 
-/**
- * Create a booking at startAt for the given customer/service/team/location.
- * We fetch serviceVariationVersion which Square requires.
- */
 export async function createBooking({
   locationId,
   teamMemberId,
@@ -175,7 +169,6 @@ export async function createBooking({
           serviceVariationId,
           serviceVariationVersion,
           teamMemberId
-          // Duration is derived from the service variation configuration
         }
       ],
       sellerNote
@@ -187,11 +180,6 @@ export async function createBooking({
   return result?.booking || null;
 }
 
-/**
- * Lookup upcoming (or all) bookings for a customer by phone/email/name.
- * includePast=false → only future bookings (>= now).
- * Returns { customer, bookings }.
- */
 export async function lookupUpcomingBookingsByPhoneOrEmail({
   phone,
   email,
@@ -201,32 +189,23 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
   teamMemberId,
   includePast = false
 }) {
-  // 1) Resolve customer
   const customer = await findCustomer({ phone, email, givenName, familyName });
-  if (!customer) {
-    return { customer: null, bookings: [] };
-  }
+  if (!customer) return { customer: null, bookings: [] };
 
-  // 2) Build booking search
   const nowIso = new Date().toISOString();
-  const filter = {
-    customerId: customer.id
-  };
+  const filter = { customerId: customer.id };
   if (locationId)   filter.locationId = locationId;
   if (teamMemberId) filter.teamMemberId = teamMemberId;
-  if (!includePast) {
-    filter.startAtRange = { startAt: nowIso };
-  }
+  if (!includePast) filter.startAtRange = { startAt: nowIso };
 
   const body = { query: { filter, sort: { sortField: 'START_AT', order: 'ASC' } } };
-
   const { result } = await bookingsApi.searchBookings(body);
   const bookings = result?.bookings || [];
 
   return { customer, bookings };
 }
 
-// Optional: cancel booking helper (not used by index.js right now)
+// Optional
 export async function cancelBooking({ bookingId, version }) {
   const { result } = await bookingsApi.cancelBooking(bookingId, { version });
   return result?.booking || null;
