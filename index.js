@@ -13,7 +13,7 @@ import {
   createBooking,
   ensureCustomerByPhoneOrEmail,
   findServiceVariationIdByName,
-  locationsApi
+  listLocations // <- replace locationsApi with listLocations
 } from './square.js';
 
 // ---------- ENV ----------
