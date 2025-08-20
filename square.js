@@ -9,6 +9,18 @@ const BASE = isProd
 // Square-Version must be a valid release date.
 const SQUARE_VERSION = '2025-07-17';
 
+// ---- small utility: timeout wrapper for fetch (6s) ----
+async function fetchWithTimeout(url, opts = {}, ms = 6000) {
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, { ...opts, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(to);
+  }
+}
+
 function authHeaders() {
   const token = process.env.SQUARE_ACCESS_TOKEN;
   if (!token) throw new Error('Missing SQUARE_ACCESS_TOKEN');
@@ -20,11 +32,12 @@ function authHeaders() {
 }
 
 async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method,
     headers: authHeaders(),
     body: body ? JSON.stringify(body) : undefined
-  });
+  }, 6000); // 6s timeout
+
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
@@ -38,51 +51,79 @@ async function api(path, { method = 'GET', body } = {}) {
 
 /** ===== Public helpers your app uses ===== **/
 
-// For /dev/square/ping
 export async function listLocations() {
   const out = await api('/v2/locations', { method: 'GET' });
   return out?.locations || [];
 }
 
-// ---------- Customers ----------
+// ---------------- Customers ----------------
 
-/** Create-or-get customer (used for making bookings) */
+/** Normalize phone to E.164 (+1XXXXXXXXXX) when US 10 digits are provided. */
+function normalizePhoneMaybeUS(phone) {
+  if (!phone) return null;
+  const digits = String(phone).replace(/\D+/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  // fall through: if user already gave +E164, keep as-is
+  return phone.startsWith('+') ? phone : `+${digits}`;
+}
+
+/** Lookup only (does NOT create) with multiple strategies */
+export async function findCustomerSmart({ phone, email, givenName, familyName }) {
+  // Strategy 1: by exact email
+  if (email) {
+    const found = await api('/v2/customers/search', {
+      method: 'POST',
+      body: { query: { filter: { emailAddress: { exact: String(email).trim().toLowerCase() } } } }
+    });
+    if (found?.customers?.[0]) return found.customers[0];
+  }
+
+  // Strategy 2: by normalized phone (exact match)
+  if (phone) {
+    const norm = normalizePhoneMaybeUS(phone);
+    const found = await api('/v2/customers/search', {
+      method: 'POST',
+      body: { query: { filter: { phoneNumber: { exact: norm } } } }
+    });
+    if (found?.customers?.[0]) return found.customers[0];
+  }
+
+  // Strategy 3: by name (exact filters; Square supports givenName/familyName filters)
+  if (givenName || familyName) {
+    const filter = {};
+    if (givenName)  filter.givenName  = { exact: givenName };
+    if (familyName) filter.familyName = { exact: familyName };
+
+    const found = await api('/v2/customers/search', {
+      method: 'POST',
+      body: { query: { filter } }
+    });
+    if (found?.customers?.length) {
+      // If multiple matches, return the first; your agent can confirm last 4 phone digits if needed
+      return found.customers[0];
+    }
+  }
+
+  return null;
+}
+
+/** Create-or-get (used when booking) */
 export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) {
-  const existing = await findCustomerByPhoneOrEmail({ phone, email });
+  const existing = await findCustomerSmart({ phone, email, givenName });
   if (existing) return existing;
   const created = await api('/v2/customers', {
     method: 'POST',
     body: {
       givenName: givenName || 'Caller',
-      phoneNumber: phone,
-      emailAddress: email
+      phoneNumber: normalizePhoneMaybeUS(phone),
+      emailAddress: email?.trim()?.toLowerCase()
     }
   });
   return created.customer;
 }
 
-/** Lookup only (does NOT create) */
-export async function findCustomerByPhoneOrEmail({ phone, email }) {
-  // Search by email first (if provided)
-  if (email) {
-    const found = await api('/v2/customers/search', {
-      method: 'POST',
-      body: { query: { filter: { emailAddress: { exact: email } } } }
-    });
-    if (found?.customers?.[0]) return found.customers[0];
-  }
-  // Then by phone
-  if (phone) {
-    const found = await api('/v2/customers/search', {
-      method: 'POST',
-      body: { query: { filter: { phoneNumber: { exact: phone } } } }
-    });
-    if (found?.customers?.[0]) return found.customers[0];
-  }
-  return null;
-}
-
-// ---------- Catalog / Services ----------
+// ---------------- Catalog / Services ----------------
 
 export async function findServiceVariationIdByName({ serviceName }) {
   const out = await api('/v2/catalog/search-catalog-items', {
@@ -109,7 +150,7 @@ async function getServiceVariationVersion(serviceVariationId) {
   return out?.object?.version ?? null;
 }
 
-// ---------- Availability / Bookings ----------
+// ---------------- Availability / Bookings ----------------
 
 export async function searchAvailability({
   locationId,
@@ -179,20 +220,16 @@ export async function cancelBooking({ bookingId, version }) {
   return out.booking;
 }
 
-/** ---- NEW: simple booking lookup by customer ---- **/
+/** ---- Booking lookup ---- */
 
-/**
- * List bookings via GET /v2/bookings with filters.
- * Filters supported by Square include: customer_id, team_member_id, location_id,
- * start_at_min, start_at_max, limit, cursor, status.
- */
+// GET /v2/bookings with filters (customer_id, team_member_id, location_id, start_at_min/max)
 export async function listBookings({
   customerId,
   teamMemberId,
   locationId,
   startAtMin,
   startAtMax,
-  status, // e.g., "ACCEPTED", "CANCELLED"
+  status, // e.g., "ACCEPTED"
   limit = 50,
   cursor
 }) {
@@ -214,23 +251,21 @@ export async function listBookings({
   };
 }
 
-/**
- * Find the next upcoming booking for a customer (by phone/email).
- * If none upcoming, returns empty array (or past if includePast=true).
- */
+/** Find upcoming bookings for a customer using phone/email/name. */
 export async function lookupUpcomingBookingsByPhoneOrEmail({
   phone,
   email,
-  locationId,       // optional filter
-  teamMemberId,     // optional filter
+  givenName,
+  familyName,
+  locationId,
+  teamMemberId,
   includePast = false
 }) {
-  const customer = await findCustomerByPhoneOrEmail({ phone, email });
+  const customer = await findCustomerSmart({ phone, email, givenName, familyName });
   if (!customer?.id) {
     return { customer: null, bookings: [] };
   }
 
-  // Query window: from "now" forward (UTC ISO) for upcoming
   const nowIso = new Date().toISOString();
   const { bookings } = await listBookings({
     customerId: customer.id,
@@ -241,7 +276,6 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
     limit: 100
   });
 
-  // Sort by startAt ascending
   bookings.sort((a, b) => (a.startAt || '').localeCompare(b.startAt || ''));
   return { customer, bookings };
 }
