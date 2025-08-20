@@ -8,6 +8,8 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
+import { DateTime } from 'luxon';
+
 import {
   // Square helpers from ./square.js (must exist there)
   listLocations,
@@ -21,6 +23,15 @@ import {
   rescheduleBooking,
   cancelBooking
 } from './square.js';
+
+import { DateTime } from 'luxon';
+
+function speakTime(iso, tz = 'America/Detroit') {
+  if (!iso) return '';
+  let dt = DateTime.fromISO(iso, { setZone: true });
+  if (!dt.isValid) return iso;
+  return dt.toZone(tz).toFormat("cccc, LLLL d 'at' h:mm a");
+}
 
 // ---------- ENV ----------
 dotenv.config();
