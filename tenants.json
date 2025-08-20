@@ -35,7 +35,7 @@
     ],
 
     "overrides": [
-      { "match": "\\bwalk[- ]?in(s)?\\b", "reply": "We’re appointment-only, but I can text you the booking link right now." }
+  { "match": "\\bwalk[- ]?in(s)?\\b", "reply": "We’re appointment-only. You can book online right now at locrepair.com/service_portal. Let me read that link for you: locrepair dot com slash service underscore portal." }
     ]
   }
 }
