@@ -1,4 +1,4 @@
-// index.js (ESM) — Fastify + Twilio Media Streams + OpenAI Realtime + Square tools
+// index.js (ESM) — Fastify + Twilio Media Streams + OpenAI Realtime + Square (REST helpers)
 // package.json must have: "type": "module"
 
 import Fastify from 'fastify';
@@ -9,15 +9,15 @@ import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
 import {
-  // Square helpers (exported from ./square.js)
+  // Square helpers from ./square.js (must exist there)
   listLocations,
   searchAvailability,
   createBooking,
   ensureCustomerByPhoneOrEmail,
   findServiceVariationIdByName,
   resolveCustomerIds,
-  lookupUpcomingBookingsByPhoneOrEmail, // <— use this (it exists in your square.js)
-  retrieveBooking,                       // expects (bookingId)
+  lookupUpcomingBookingsByPhoneOrEmail,
+  retrieveBooking,
   rescheduleBooking,
   cancelBooking
 } from './square.js';
@@ -131,23 +131,6 @@ function speakTime(iso, tz = 'America/Detroit') {
   }).format(dt);
 }
 
-// ---- tool-call watchdogs ----
-function withTimeout(promise, ms, label = 'tool') {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-    )
-  ]);
-}
-function say(openAiWs, text) {
-  if (!openAiWs || openAiWs.readyState !== 1) return;
-  openAiWs.send(JSON.stringify({
-    type: 'response.create',
-    response: { instructions: text }
-  }));
-}
-
 // ---------- INSTRUCTIONS BUILDER ----------
 function buildInstructions(tenant, kbText = '') {
   const style = tenant?.voice_style || 'warm, professional, concise';
@@ -163,7 +146,7 @@ function buildInstructions(tenant, kbText = '') {
       .join('\n') || '(none)';
 
   return (
-    `You are the voice receptionist for "${studio}".
+`You are the voice receptionist for "${studio}".
 Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 seconds.
 
 GROUNDING & SOURCES
@@ -232,30 +215,6 @@ fastify.get('/dev/square/ping', async (_req, reply) => {
   }
 });
 
-// Dev: quick customer→bookings check in browser
-fastify.get('/dev/find', async (req, reply) => {
-  try {
-    const { phone, email, name, date } = req.query;
-    const { locationId, teamMemberId } = sqDefaults();
-    let startAt, endAt;
-    if (date) ({ startAt, endAt } = dayWindowUTC(String(date)));
-
-    const ids = await resolveCustomerIds({ phone, email, givenName: name, familyName: undefined });
-    if (!ids.length) return reply.send({ ok: false, error: 'no customer' });
-
-    // use the 1st match for this dev endpoint
-    const { bookings } = await lookupUpcomingBookingsByPhoneOrEmail({
-      phone, email, givenName: name, familyName: undefined,
-      locationId, teamMemberId,
-      includePast: true // show all for debugging
-    });
-
-    reply.send({ ok: true, count: bookings.length, sample: bookings.slice(0, 3) });
-  } catch (e) {
-    reply.code(500).send({ ok: false, error: String(e?.message || e) });
-  }
-});
-
 // Twilio webhook: start bidirectional media stream and pass tenant key
 fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
@@ -298,10 +257,10 @@ fastify.register(async function (app) {
     let instructions = '';
 
     let tenantRef = null;
-    let chosenVoice = DEFAULTS.voice;
+    let chosenVoice   = DEFAULTS.voice;
     let selectedModel = DEFAULTS.model;
-    let selectedTemp = DEFAULTS.temperature;
-    let selectedMods = DEFAULTS.modalities;
+    let selectedTemp  = DEFAULTS.temperature;
+    let selectedMods  = DEFAULTS.modalities;
     let selectedTurnDet = DEFAULTS.turn_detection;
 
     function maybeSendSessionUpdate() {
@@ -330,6 +289,7 @@ fastify.register(async function (app) {
           modalities: selectedMods,
           temperature: selectedTemp,
           tools: [
+            // Availability (search) + Booking (create)
             {
               type: 'function',
               name: 'square_search_availability',
@@ -361,19 +321,20 @@ fastify.register(async function (app) {
                 required: ['startAt']
               }
             },
+            // Find / Cancel / Reschedule
             {
               type: 'function',
               name: 'square_find_booking',
-              description: 'Look up one or more bookings by phone, email, or name, optionally limited to a specific date.',
+              description: 'Look up one or more bookings by phone, email, or name, optionally limited to a specific date or date window.',
               parameters: {
                 type: 'object',
                 properties: {
                   phone: { type: 'string' },
                   email: { type: 'string' },
-                  name: { type: 'string' },
-                  date: { type: 'string', description: 'yyyy-mm-dd (tenant timezone)' },
-                  startAt: { type: 'string' },
-                  endAt: { type: 'string' }
+                  name:  { type: 'string' },
+                  date:  { type: 'string', description: 'yyyy-mm-dd (tenant timezone)' },
+                  startAt: { type: 'string', description: 'ISO start of custom window' },
+                  endAt:   { type: 'string', description: 'ISO end of custom window' }
                 }
               }
             },
@@ -387,8 +348,8 @@ fastify.register(async function (app) {
                   bookingId: { type: 'string' },
                   phone: { type: 'string' },
                   email: { type: 'string' },
-                  name: { type: 'string' },
-                  date: { type: 'string' }
+                  name:  { type: 'string' },
+                  date:  { type: 'string' }
                 }
               }
             },
@@ -402,8 +363,8 @@ fastify.register(async function (app) {
                   bookingId: { type: 'string' },
                   phone: { type: 'string' },
                   email: { type: 'string' },
-                  name: { type: 'string' },
-                  date: { type: 'string' },
+                  name:  { type: 'string' },
+                  date:  { type: 'string' },
                   newStartAt: { type: 'string', description: 'New ISO start (e.g. 2025-08-20T15:00:00-04:00)' }
                 },
                 required: ['newStartAt']
@@ -430,13 +391,13 @@ fastify.register(async function (app) {
           tenantRef = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
 
           // choose per-tenant config (with defaults)
-          chosenVoice = tenantRef?.voice || DEFAULTS.voice;
-          selectedModel = tenantRef?.model || DEFAULTS.model;
-          selectedTemp = tenantRef?.temperature ?? DEFAULTS.temperature;
-          selectedMods = Array.isArray(tenantRef?.modalities) ? tenantRef.modalities : DEFAULTS.modalities;
+          chosenVoice     = tenantRef?.voice || DEFAULTS.voice;
+          selectedModel   = tenantRef?.model || DEFAULTS.model;
+          selectedTemp    = tenantRef?.temperature ?? DEFAULTS.temperature;
+          selectedMods    = Array.isArray(tenantRef?.modalities) ? tenantRef.modalities : DEFAULTS.modalities;
           selectedTurnDet = tenantRef?.turn_detection || DEFAULTS.turn_detection;
-          currentKbCap = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
-          const instructionsCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
+          currentKbCap    = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
+          const instrCap  = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
           // Connect OpenAI Realtime for this call
           openAiReady = false;
@@ -463,23 +424,17 @@ fastify.register(async function (app) {
                 if (name === 'square_search_availability') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
                   if (!serviceVariationId && args.serviceName) {
-                    serviceVariationId = await withTimeout(
-                      findServiceVariationIdByName({ serviceName: args.serviceName }),
-                      4000, 'findServiceVariationIdByName'
-                    );
+                    serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a matching serviceName.');
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
 
-                  const slots = await withTimeout(
-                    searchAvailability({
-                      locationId,
-                      teamMemberId,
-                      serviceVariationId,
-                      startAt: args.startAt,
-                      endAt: args.endAt
-                    }),
-                    8000, 'searchAvailability'
-                  );
+                  const slots = await searchAvailability({
+                    locationId,
+                    teamMemberId,
+                    serviceVariationId,
+                    startAt: args.startAt,
+                    endAt: args.endAt
+                  });
 
                   toolResult = { ok: true, slots };
                 }
@@ -487,182 +442,210 @@ fastify.register(async function (app) {
                 if (name === 'square_create_booking') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
                   if (!serviceVariationId && args.serviceName) {
-                    serviceVariationId = await withTimeout(
-                      findServiceVariationIdByName({ serviceName: args.serviceName }),
-                      4000, 'findServiceVariationIdByName'
-                    );
+                    serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a matching serviceName.');
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
 
-                  const customer = await withTimeout(
-                    ensureCustomerByPhoneOrEmail({
-                      givenName: args.customerGivenName,
-                      phone: args.customerPhone,
-                      email: args.customerEmail
-                    }),
-                    5000, 'ensureCustomerByPhoneOrEmail'
-                  );
+                  const customer = await ensureCustomerByPhoneOrEmail({
+                    givenName: args.customerGivenName,
+                    phone: args.customerPhone,
+                    email: args.customerEmail
+                  });
 
-                  const booking = await withTimeout(
-                    createBooking({
-                      locationId,
-                      teamMemberId,
-                      customerId: customer?.id,
-                      serviceVariationId,
-                      startAt: args.startAt,
-                      sellerNote: args.note || undefined
-                    }),
-                    8000, 'createBooking'
-                  );
+                  const booking = await createBooking({
+                    locationId,
+                    teamMemberId,
+                    customerId: customer?.id,
+                    serviceVariationId,
+                    startAt: args.startAt,
+                    sellerNote: args.note || undefined
+                  });
 
                   toolResult = { ok: true, booking };
                 }
 
                 if (name === 'square_find_booking') {
                   const tz = tenantRef?.timezone || 'America/Detroit';
+
+                  // Build optional date window
                   let startAt = args.startAt || null;
-                  let endAt = args.endAt || null;
+                  let endAt   = args.endAt   || null;
                   if (args.date && (!startAt || !endAt)) {
                     const win = dayWindowUTC(args.date);
                     startAt = startAt || win.startAt;
-                    endAt = endAt || win.endAt;
+                    endAt   = endAt   || win.endAt;
                   }
 
-                  const ids = await withTimeout(
-                    resolveCustomerIds({
-                      email: args.email,
+                  // Resolve customer(s) → then search
+                  let givenName, familyName;
+                  if (args.name) {
+                    const parts = String(args.name).trim().split(/\s+/);
+                    givenName = parts[0];
+                    familyName = parts.slice(1).join(' ') || undefined;
+                  }
+
+                  const { bookings = [] } = await (async () => {
+                    // Use the helper that takes identifiers directly
+                    const result = await lookupUpcomingBookingsByPhoneOrEmail({
                       phone: args.phone,
-                      givenName: args.name, // treat name as givenName fallback
-                      familyName: undefined
-                    }),
-                    5000, 'resolveCustomerIds'
-                  );
+                      email: args.email,
+                      givenName,
+                      familyName,
+                      locationId,
+                      teamMemberId,
+                      includePast: true // allow past + future
+                    });
+                    // Narrow by window if provided
+                    let list = result.bookings || [];
+                    if (startAt || endAt) {
+                      const s = startAt ? new Date(startAt).getTime() : -Infinity;
+                      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+                      list = list.filter(b => {
+                        const t = new Date(b.start_at || b.startAt).getTime();
+                        return t >= s && t <= e;
+                      });
+                    }
+                    return { bookings: list };
+                  })();
 
-                  if (!ids.length) {
-                    toolResult = { ok: false, error: 'No matching customer found.' };
-                  } else {
-                    // Use the convenience helper that you already have in square.js
-                    const { bookings } = await withTimeout(
-                      lookupUpcomingBookingsByPhoneOrEmail({
-                        phone: args.phone,
-                        email: args.email,
-                        givenName: args.name,
-                        familyName: undefined,
-                        locationId,
-                        teamMemberId,
-                        includePast: true // caller might ask about past/tomorrow/etc.
-                      }),
-                      8000, 'lookupUpcomingBookingsByPhoneOrEmail'
-                    );
+                  // Normalize / format
+                  const formatted = bookings
+                    .map(b => {
+                      const start = b.start_at || b.startAt;
+                      return {
+                        bookingId: b.id,
+                        startAt: start,
+                        spoken: speakTime(start, tz),
+                        locationId: b.location_id || b.locationId,
+                        customerId: b.customer_id || b.customerId,
+                        segments: (b.appointment_segments || b.appointmentSegments || []).map(s => ({
+                          serviceVariationId: s.service_variation_id || s.serviceVariationId,
+                          durationMinutes: s.duration_minutes ?? s.durationMinutes ?? null
+                        }))
+                      };
+                    })
+                    .sort((a, b) => new Date(a.startAt) - new Date(b.startAt))
+                    .slice(0, 10);
 
-                    // Constrain to window if provided
-                    const filtered = (startAt && endAt)
-                      ? bookings.filter(b => b.startAt >= startAt && b.startAt <= endAt)
-                      : bookings;
-
-                    filtered.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
-                    const formatted = filtered.slice(0, 10).map(b => ({
-                      bookingId: b.id,
-                      startAt: b.startAt,
-                      spoken: speakTime(b.startAt, tz),
-                      locationId: b.locationId,
-                      customerId: b.customerId,
-                      segments: (b.appointmentSegments || []).map(s => ({
-                        serviceVariationId: s.serviceVariationId,
-                        durationMinutes: s.durationMinutes ?? null
-                      }))
-                    }));
-                    toolResult = { ok: true, bookings: formatted };
-                  }
+                  toolResult = { ok: true, bookings: formatted };
                 }
 
                 if (name === 'square_cancel_booking') {
                   let booking = null;
+
                   if (args.bookingId) {
-                    booking = await withTimeout(
-                      retrieveBooking(args.bookingId), // correct signature
-                      6000, 'retrieveBooking'
-                    );
+                    booking = await retrieveBooking(args.bookingId);
                   } else {
-                    const ids = await withTimeout(
-                      resolveCustomerIds({ email: args.email, phone: args.phone, givenName: args.name, familyName: undefined }),
-                      5000, 'resolveCustomerIds'
-                    );
-                    let startAt, endAt;
+                    // find the booking by identifiers + optional date
+                    const { locationId, teamMemberId } = sqDefaults();
+                    let givenName, familyName;
+                    if (args.name) {
+                      const parts = String(args.name).trim().split(/\s+/);
+                      givenName = parts[0];
+                      familyName = parts.slice(1).join(' ') || undefined;
+                    }
+                    let { startAt, endAt } = { startAt: null, endAt: null };
                     if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
-                    const { bookings } = await withTimeout(
-                      lookupUpcomingBookingsByPhoneOrEmail({
-                        phone: args.phone,
-                        email: args.email,
-                        givenName: args.name,
-                        familyName: undefined,
-                        locationId,
-                        teamMemberId,
-                        includePast: true
-                      }),
-                      8000, 'lookupUpcomingBookingsByPhoneOrEmail'
-                    );
-                    const narrowed = (startAt && endAt)
-                      ? bookings.filter(b => b.startAt >= startAt && b.startAt <= endAt)
-                      : bookings;
-                    narrowed.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
-                    booking = narrowed[0] || null;
+
+                    const res = await lookupUpcomingBookingsByPhoneOrEmail({
+                      phone: args.phone,
+                      email: args.email,
+                      givenName,
+                      familyName,
+                      locationId,
+                      teamMemberId,
+                      includePast: true
+                    });
+
+                    let list = res.bookings || [];
+                    if (startAt || endAt) {
+                      const s = startAt ? new Date(startAt).getTime() : -Infinity;
+                      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+                      list = list.filter(b => {
+                        const t = new Date(b.start_at || b.startAt).getTime();
+                        return t >= s && t <= e;
+                      });
+                    }
+                    list.sort((a, b) => new Date(a.start_at || a.startAt) - new Date(b.start_at || b.startAt));
+                    booking = list[0] || null;
                   }
 
                   if (!booking) throw new Error('No matching booking found to cancel.');
-                  const cancelled = await withTimeout(
-                    cancelBooking({ bookingId: booking.id, version: booking.version }),
-                    8000, 'cancelBooking'
-                  );
-                  toolResult = { ok: true, booking: { bookingId: cancelled.id, startAt: cancelled.startAt, status: 'CANCELLED' } };
+
+                  const cancelled = await cancelBooking({
+                    bookingId: booking.id,
+                    version: booking.version
+                  });
+
+                  toolResult = {
+                    ok: true,
+                    booking: {
+                      bookingId: cancelled.id,
+                      startAt: cancelled.start_at || cancelled.startAt,
+                      status: 'CANCELLED'
+                    }
+                  };
                 }
 
                 if (name === 'square_reschedule_booking') {
                   if (!args.newStartAt) throw new Error('newStartAt is required.');
 
                   let booking = null;
+
                   if (args.bookingId) {
-                    booking = await withTimeout(
-                      retrieveBooking(args.bookingId), // correct signature
-                      6000, 'retrieveBooking'
-                    );
+                    booking = await retrieveBooking(args.bookingId);
                   } else {
-                    const ids = await withTimeout(
-                      resolveCustomerIds({ email: args.email, phone: args.phone, givenName: args.name, familyName: undefined }),
-                      5000, 'resolveCustomerIds'
-                    );
-                    let startAt, endAt;
+                    const { locationId, teamMemberId } = sqDefaults();
+                    let givenName, familyName;
+                    if (args.name) {
+                      const parts = String(args.name).trim().split(/\s+/);
+                      givenName = parts[0];
+                      familyName = parts.slice(1).join(' ') || undefined;
+                    }
+                    let { startAt, endAt } = { startAt: null, endAt: null };
                     if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
-                    const { bookings } = await withTimeout(
-                      lookupUpcomingBookingsByPhoneOrEmail({
-                        phone: args.phone,
-                        email: args.email,
-                        givenName: args.name,
-                        familyName: undefined,
-                        locationId,
-                        teamMemberId,
-                        includePast: true
-                      }),
-                      8000, 'lookupUpcomingBookingsByPhoneOrEmail'
-                    );
-                    const narrowed = (startAt && endAt)
-                      ? bookings.filter(b => b.startAt >= startAt && b.startAt <= endAt)
-                      : bookings;
-                    narrowed.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
-                    booking = narrowed[0] || null;
+
+                    const res = await lookupUpcomingBookingsByPhoneOrEmail({
+                      phone: args.phone,
+                      email: args.email,
+                      givenName,
+                      familyName,
+                      locationId,
+                      teamMemberId,
+                      includePast: true
+                    });
+
+                    let list = res.bookings || [];
+                    if (startAt || endAt) {
+                      const s = startAt ? new Date(startAt).getTime() : -Infinity;
+                      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+                      list = list.filter(b => {
+                        const t = new Date(b.start_at || b.startAt).getTime();
+                        return t >= s && t <= e;
+                      });
+                    }
+                    list.sort((a, b) => new Date(a.start_at || a.startAt) - new Date(b.start_at || b.startAt));
+                    booking = list[0] || null;
                   }
 
                   if (!booking) throw new Error('No matching booking found to reschedule.');
-                  const updated = await withTimeout(
-                    rescheduleBooking({ bookingId: booking.id, newStartAt: args.newStartAt }),
-                    8000, 'rescheduleBooking'
-                  );
-                  toolResult = { ok: true, booking: { bookingId: updated.id, startAt: updated.startAt, status: 'RESCHEDULED' } };
+
+                  const updated = await rescheduleBooking({
+                    bookingId: booking.id,
+                    newStartAt: args.newStartAt
+                  });
+
+                  toolResult = {
+                    ok: true,
+                    booking: {
+                      bookingId: updated.id,
+                      startAt: updated.start_at || updated.startAt,
+                      status: 'RESCHEDULED'
+                    }
+                  };
                 }
               } catch (e) {
                 toolResult = { ok: false, error: String(e?.message || e) };
-                // Speak a graceful fallback so it never hangs
-                say(openAiWs, "Sorry — I couldn’t pull that up just now. Can I confirm the phone number or email on your profile and try again?");
               }
 
               // return tool result to model
@@ -719,7 +702,7 @@ fastify.register(async function (app) {
           openAiWs.on('error', (err) => app.log.error({ err }, 'OpenAI WS error'));
           openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
 
-          // load KB and build instructions
+          // load KB and build instructions (use a single instrCap variable)
           let kbText = '';
           if (tenantRef?.faq_urls?.length) {
             kbText = await fetchKbText(tenantRef.faq_urls);
