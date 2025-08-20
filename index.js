@@ -51,14 +51,24 @@ OVERRIDES = Array.isArray(OVERRIDES)
   ? OVERRIDES.filter(o => o && typeof o.match === 'string' && typeof o.reply === 'string')
   : [];
 
-// ---------- TENANTS ----------
+// ---------- TENANTS (robust loader: tenants.js → Tenants.js → tenants.json) ----------
 let TENANTS = {};
 try {
-  const raw = await fs.readFile(new URL('./tenants.js', import.meta.url));
-  TENANTS = JSON.parse(String(raw));
+  const mod = await import('./tenants.js');
+  TENANTS = mod?.default || mod?.TENANTS || {};
 } catch {
-  console.warn('tenants.json not found or invalid; TENANTS = {}');
-  TENANTS = {};
+  try {
+    const mod2 = await import('./Tenants.js');
+    TENANTS = mod2?.default || mod2?.TENANTS || {};
+  } catch {
+    try {
+      const raw = await fs.readFile(new URL('./tenants.json', import.meta.url));
+      TENANTS = JSON.parse(String(raw));
+    } catch {
+      console.warn('No tenants file found (tenants.js / Tenants.js / tenants.json); using empty {}');
+      TENANTS = {};
+    }
+  }
 }
 
 // ---------- KB HELPERS ----------
