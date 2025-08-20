@@ -9,12 +9,17 @@ import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
 
 import {
+  // Square helpers (exported from ./square.js)
+  listLocations,
   searchAvailability,
   createBooking,
   ensureCustomerByPhoneOrEmail,
   findServiceVariationIdByName,
-  listLocations,
-  lookupUpcomingBookingsByPhoneOrEmail
+  resolveCustomerIds,
+  searchBookingsByCustomer,
+  retrieveBooking,
+  rescheduleBooking,
+  cancelBooking
 } from './square.js';
 
 // ---------- ENV ----------
@@ -29,7 +34,7 @@ if (!OPENAI_API_KEY) {
 const DEFAULTS = {
   voice: 'alloy',
   model: 'gpt-4o-realtime-preview-2024-10-01',
-  temperature: 0.2, // ↓ reduce “creativity” to avoid guessing
+  temperature: 0.7,
   modalities: ['text', 'audio'],
   turn_detection: { type: 'server_vad' },
   kb_per_file_char_cap: 10000,
@@ -105,52 +110,66 @@ function sqDefaults() {
   };
 }
 
-// ---------- INSTRUCTIONS BUILDER (no texting; must use lookup tool) ----------
+// ---------- DATE/TIME SPEECH HELPERS ----------
+function dayWindowUTC(isoDate) {
+  // Build UTC 00:00..23:59:59 window for the given date string (YYYY-MM-DD)
+  const [y, m, d] = isoDate.slice(0, 10).split('-').map(Number);
+  const startAt = new Date(Date.UTC(y, m - 1, d, 0, 0, 0)).toISOString();
+  const endAt = new Date(Date.UTC(y, m - 1, d, 23, 59, 59)).toISOString();
+  return { startAt, endAt };
+}
+
+function speakTime(iso, tz = 'America/Detroit') {
+  const dt = new Date(iso);
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(dt);
+}
+
+// ---------- INSTRUCTIONS BUILDER ----------
 function buildInstructions(tenant, kbText = '') {
-  const style    = tenant?.voice_style || 'warm, professional, concise';
+  const style = tenant?.voice_style || 'warm, professional, concise';
   const services = Array.isArray(tenant?.services) ? tenant.services : [];
-  const pricing  = Array.isArray(tenant?.pricing_notes) ? tenant.pricing_notes : [];
+  const pricing = Array.isArray(tenant?.pricing_notes) ? tenant.pricing_notes : [];
   const policies = Array.isArray(tenant?.policies) ? tenant.policies : [];
-  const studio   = tenant?.studio_name || 'our studio';
-  const booking  = tenant?.booking_url || '(unset)';
+  const studio = tenant?.studio_name || 'our studio';
+  const booking = tenant?.booking_url || '(unset)';
 
-  const canonical = (tenant?.canonical_answers || [])
-    .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
-    .join('\n') || '(none)';
-
-  const spokenBookingHint = booking === '(unset)'
-    ? '(booking link not set)'
-    : `When reading this aloud, say it slowly and clearly. If it has slashes/underscores, read them out, e.g., "locrepair dot com slash service underscore portal".`;
-
-  // Two tiny example dialogues to strongly bias tool usage
-  const examples = `
-EXAMPLES (STRICTLY FOLLOW):
-User: "Do I have an appointment tomorrow? My number is 313-488-4898."
-Assistant: "Let me check your appointment. One moment." → CALL square_lookup_booking with customerPhone="+13134884898". If found, SPEAK date/time; if not found, say you couldn't verify.
-
-User: "What's my time on Friday? I think it's under yesha@example.com."
-Assistant: "I'll verify that for you." → CALL square_lookup_booking with customerEmail="yesha@example.com". If found, SPEAK date/time; if not found, ask for phone or full name and re-check.
-`.trim();
+  const canonical =
+    (tenant?.canonical_answers || [])
+      .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
+      .join('\n') || '(none)';
 
   return (
-`You are the voice receptionist for "${studio}".
+    `You are the voice receptionist for "${studio}".
 Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 seconds.
-
-HARD RULES
-- DO NOT offer to text or email anything. Never say you'll send a link or message.
-- ALWAYS provide information verbally and clearly.
-- DO NOT answer any question about an existing appointment (e.g., "Do I have one?", "What time is it?") UNLESS you first CALL the function square_lookup_booking and use its results.
-- If you lack phone/email, ask for the phone number first; if they don’t know it, ask for first and last name. Then CALL square_lookup_booking.
-- If square_lookup_booking returns no match, say you couldn't verify any appointment with that info and ask to try a different phone/email/name. Do NOT guess.
 
 GROUNDING & SOURCES
 - Prefer tenant content and FAQ text below over anything else.
-- Never invent pricing, medical advice, or availability. If unsure, ask a brief clarifying question.
+- If the question is not covered or you’re uncertain: ask a brief clarifying question, then stop.
+- Never invent pricing, medical advice, or availability. If unsure, say you’ll confirm later.
+- For policies, quote exactly; if not present in the KB, say you’ll check and follow up.
 
-BOOKING
+BOOKING (after a quote / or by request)
 - Booking link: ${booking}
-- ${spokenBookingHint}
-- For new appointments: first CALL square_search_availability when the caller gives a day/time window; offer 2–3 nearest slots; after they pick, CALL square_create_booking.
+- For availability: call square_search_availability with the caller’s window and service.
+- Offer 2–3 nearest slots. After they pick, call square_create_booking.
+
+APPOINTMENT LOOKUP (find my appointment)
+- If the caller asks for their appointment time/date, ask for the phone or email on file (name as fallback).
+- If they mention a specific day, include { date: 'YYYY-MM-DD' }.
+- Call square_find_booking. If multiple bookings are found, ask which one and then read the exact date/time.
+- Never guess times. Read back clearly using the tenant timezone.
+
+CANCEL / RESCHEDULE
+- To cancel, confirm they want to cancel, then call square_cancel_booking.
+- To reschedule, confirm a new requested day/time; check availability; then call square_reschedule_booking with the chosen new start time.
+- Always read back the result (date/time). Do not promise to text.
 
 SERVICES
 - ${services.join(', ')}
@@ -166,8 +185,6 @@ ${canonical}
 
 TENANT FAQ TEXT (preferred over external knowledge):
 ${kbText || '(none)'}
-
-${examples}
 
 SAFETY
 - Do not give medical advice; recommend seeing a dermatologist if asked.
@@ -185,7 +202,7 @@ fastify.get('/', async (_req, reply) => {
   reply.type('text/plain').send('OK');
 });
 
-// Dev: Square sanity ping
+// Dev: Square sanity ping (lists locations)
 fastify.get('/dev/square/ping', async (_req, reply) => {
   try {
     const locations = await listLocations();
@@ -198,36 +215,15 @@ fastify.get('/dev/square/ping', async (_req, reply) => {
   }
 });
 
-// Dev: test booking lookup over HTTP (no phone call needed)
-fastify.get('/dev/square/lookup', async (req, reply) => {
-  try {
-    const { phone, email, givenName, familyName, includePast } = req.query || {};
-    const { locationId, teamMemberId } = sqDefaults();
-
-    const out = await lookupUpcomingBookingsByPhoneOrEmail({
-      phone: phone || null,
-      email: email || null,
-      givenName: givenName || null,
-      familyName: familyName || null,
-      locationId,
-      teamMemberId,
-      includePast: includePast === 'true'
-    });
-
-    reply.send({ ok: true, ...out });
-  } catch (e) {
-    reply.code(500).send({ ok: false, error: String(e?.message || e) });
-  }
-});
-
 // Twilio webhook: start bidirectional media stream and pass tenant key
 fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
   const toNumber = (request.body?.To || '').trim();
   const tenant = TENANTS[toNumber] || Object.values(TENANTS)[0] || null;
 
-  const greeting = tenant?.greeting_tts
-    || `Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting...begin speaking now`;
+  const greeting =
+    tenant?.greeting_tts ||
+    `Thanks for calling ${tenant?.studio_name || 'our studio'}. Connecting...begin speaking now`;
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -261,11 +257,11 @@ fastify.register(async function (app) {
     let instructions = '';
 
     let tenantRef = null;
-    let chosenVoice      = DEFAULTS.voice;
-    let selectedModel    = DEFAULTS.model;
-    let selectedTemp     = DEFAULTS.temperature;
-    let selectedMods     = DEFAULTS.modalities;
-    let selectedTurnDet  = DEFAULTS.turn_detection;
+    let chosenVoice = DEFAULTS.voice;
+    let selectedModel = DEFAULTS.model;
+    let selectedTemp = DEFAULTS.temperature;
+    let selectedMods = DEFAULTS.modalities;
+    let selectedTurnDet = DEFAULTS.turn_detection;
 
     function maybeSendSessionUpdate() {
       if (!openAiWs || openAiWs.readyState !== WebSocket.OPEN) return;
@@ -293,6 +289,7 @@ fastify.register(async function (app) {
           modalities: selectedMods,
           temperature: selectedTemp,
           tools: [
+            // Availability (search) + Booking (create)
             {
               type: 'function',
               name: 'square_search_availability',
@@ -300,7 +297,7 @@ fastify.register(async function (app) {
               parameters: {
                 type: 'object',
                 properties: {
-                  serviceName: { type: 'string', description: 'Human-friendly service name, e.g. "Interlock 2-3 turns". If missing, the default service variation env var will be used.' },
+                  serviceName: { type: 'string', description: 'Friendly name, e.g. "Interlock 2-3 turns". If missing, SQUARE_DEFAULT_SERVICE_VARIATION_ID is used.' },
                   startAt: { type: 'string', description: 'ISO 8601 start datetime, e.g. 2025-08-20T15:00:00-04:00' },
                   endAt: { type: 'string', description: 'ISO 8601 end datetime, window to search' }
                 },
@@ -315,7 +312,7 @@ fastify.register(async function (app) {
                 type: 'object',
                 properties: {
                   startAt: { type: 'string', description: 'Chosen start datetime in ISO 8601' },
-                  serviceName: { type: 'string', description: 'Service name; used to look up the service variation ID if needed' },
+                  serviceName: { type: 'string', description: 'Service name (optional if env default is set)' },
                   customerGivenName: { type: 'string' },
                   customerPhone: { type: 'string' },
                   customerEmail: { type: 'string' },
@@ -324,19 +321,53 @@ fastify.register(async function (app) {
                 required: ['startAt']
               }
             },
+            // Find / Cancel / Reschedule
             {
               type: 'function',
-              name: 'square_lookup_booking',
-              description: 'Look up the caller’s upcoming appointments by phone, email, or name. Returns the next upcoming booking(s).',
+              name: 'square_find_booking',
+              description: 'Look up one or more bookings by phone, email, or name, optionally limited to a specific date or date window.',
               parameters: {
                 type: 'object',
                 properties: {
-                  customerPhone: { type: 'string', description: 'E.164 like +13135551234 or US 10 digits; punctuation allowed.' },
-                  customerEmail: { type: 'string', description: 'Customer email (case-insensitive).' },
-                  customerGivenName: { type: 'string', description: 'First name, if provided instead of phone/email.' },
-                  customerFamilyName: { type: 'string', description: 'Last name, optional for disambiguation.' },
-                  includePast: { type: 'boolean', description: 'If true, also return past bookings (sorted by startAt).' }
+                  phone: { type: 'string' },
+                  email: { type: 'string' },
+                  name: { type: 'string' },
+                  date: { type: 'string', description: 'yyyy-mm-dd (tenant timezone)' },
+                  startAt: { type: 'string', description: 'ISO start of custom window' },
+                  endAt: { type: 'string', description: 'ISO end of custom window' }
                 }
+              }
+            },
+            {
+              type: 'function',
+              name: 'square_cancel_booking',
+              description: 'Cancel a booking by bookingId, or by customer identification + optional date.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  bookingId: { type: 'string' },
+                  phone: { type: 'string' },
+                  email: { type: 'string' },
+                  name: { type: 'string' },
+                  date: { type: 'string' }
+                }
+              }
+            },
+            {
+              type: 'function',
+              name: 'square_reschedule_booking',
+              description: 'Reschedule a booking (change start time) by bookingId or by customer identification + date.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  bookingId: { type: 'string' },
+                  phone: { type: 'string' },
+                  email: { type: 'string' },
+                  name: { type: 'string' },
+                  date: { type: 'string' },
+                  newStartAt: { type: 'string', description: 'New ISO start (e.g. 2025-08-20T15:00:00-04:00)' }
+                },
+                required: ['newStartAt']
               }
             }
           ]
@@ -360,12 +391,13 @@ fastify.register(async function (app) {
           tenantRef = TENANTS[tenantKey] || Object.values(TENANTS)[0] || null;
 
           // choose per-tenant config (with defaults)
-          chosenVoice      = tenantRef?.voice || DEFAULTS.voice;
-          selectedModel    = tenantRef?.model || DEFAULTS.model;
-          selectedTemp     = (tenantRef?.temperature ?? DEFAULTS.temperature);
-          selectedMods     = Array.isArray(tenantRef?.modalities) ? tenantRef.modalities : DEFAULTS.modalities;
-          selectedTurnDet  = tenantRef?.turn_detection || DEFAULTS.turn_detection;
-          currentKbCap     = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
+          chosenVoice = tenantRef?.voice || DEFAULTS.voice;
+          selectedModel = tenantRef?.model || DEFAULTS.model;
+          selectedTemp = tenantRef?.temperature ?? DEFAULTS.temperature;
+          selectedMods = Array.isArray(tenantRef?.modalities) ? tenantRef.modalities : DEFAULTS.modalities;
+          selectedTurnDet = tenantRef?.turn_detection || DEFAULTS.turn_detection;
+          currentKbCap = tenantRef?.kb_per_file_char_cap || DEFAULTS.kb_per_file_char_cap;
+          const instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
 
           // Connect OpenAI Realtime for this call
           openAiReady = false;
@@ -378,10 +410,9 @@ fastify.register(async function (app) {
           openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate(); });
 
           openAiWs.on('message', async (buf) => {
-            let msg; 
-            try { msg = JSON.parse(buf.toString()); } catch { return; }
+            let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
 
-            // 1) TOOL / FUNCTION CALLS FROM REALTIME
+            // Tool calls
             if (msg.type === 'response.function_call') {
               const { name, arguments: argsJson, call_id } = msg;
               let toolResult = null;
@@ -390,15 +421,12 @@ fastify.register(async function (app) {
                 const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
                 const { locationId, teamMemberId } = sqDefaults();
 
-                // --- square_search_availability ---
                 if (name === 'square_search_availability') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
                   if (!serviceVariationId && args.serviceName) {
                     serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) {
-                    throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
-                  }
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
 
                   const slots = await searchAvailability({
                     locationId,
@@ -411,15 +439,12 @@ fastify.register(async function (app) {
                   toolResult = { ok: true, slots };
                 }
 
-                // --- square_create_booking ---
                 if (name === 'square_create_booking') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
                   if (!serviceVariationId && args.serviceName) {
                     serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) {
-                    throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
-                  }
+                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
 
                   const customer = await ensureCustomerByPhoneOrEmail({
                     givenName: args.customerGivenName,
@@ -439,70 +464,110 @@ fastify.register(async function (app) {
                   toolResult = { ok: true, booking };
                 }
 
-                // --- square_lookup_booking ---
-                if (name === 'square_lookup_booking') {
-                  const { 
-                    customerPhone, 
-                    customerEmail, 
-                    customerGivenName, 
-                    customerFamilyName, 
-                    includePast 
-                  } = (typeof args === 'object' && args) ? args : {};
+                if (name === 'square_find_booking') {
+                  const tz = tenantRef?.timezone || 'America/Detroit';
+                  let startAt = args.startAt || null;
+                  let endAt = args.endAt || null;
+                  if (args.date && (!startAt || !endAt)) {
+                    const win = dayWindowUTC(args.date);
+                    startAt = startAt || win.startAt;
+                    endAt = endAt || win.endAt;
+                  }
 
-                  const { customer, bookings } = await lookupUpcomingBookingsByPhoneOrEmail({
-                    phone: customerPhone || null,
-                    email: customerEmail || null,
-                    givenName: customerGivenName || null,
-                    familyName: customerFamilyName || null,
-                    locationId,
-                    teamMemberId,
-                    includePast: !!includePast
+                  const customerIds = await resolveCustomerIds({
+                    email: args.email,
+                    phone: args.phone,
+                    name: args.name
                   });
 
-                  toolResult = {
-                    ok: true,
-                    customer: customer ? {
-                      id: customer.id,
-                      givenName: customer.givenName,
-                      familyName: customer.familyName,
-                      phone: customer.phoneNumber,
-                      email: customer.emailAddress
-                    } : null,
-                    bookings: (bookings || []).map(b => ({
-                      id: b.id,
+                  if (!customerIds.length) {
+                    toolResult = { ok: false, error: 'No matching customer found.' };
+                  } else {
+                    const bookings = await searchBookingsByCustomer({
+                      customerIds,
+                      locationId,
+                      teamMemberId,
+                      startAt,
+                      endAt
+                    });
+
+                    bookings.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+                    const formatted = bookings.slice(0, 10).map(b => ({
+                      bookingId: b.id,
                       startAt: b.startAt,
+                      spoken: speakTime(b.startAt, tz),
                       locationId: b.locationId,
-                      status: b.status
-                    }))
-                  };
+                      customerId: b.customerId,
+                      segments: (b.appointmentSegments || []).map(s => ({
+                        serviceVariationId: s.serviceVariationId,
+                        durationMinutes: s.durationMinutes ?? null
+                      }))
+                    }));
+                    toolResult = { ok: true, bookings: formatted };
+                  }
+                }
+
+                if (name === 'square_cancel_booking') {
+                  // direct by bookingId?
+                  let booking = null;
+                  if (args.bookingId) {
+                    booking = await retrieveBooking({ bookingId: args.bookingId });
+                  } else {
+                    const { locationId, teamMemberId } = sqDefaults();
+                    const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
+                    let startAt, endAt;
+                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+                    const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
+                    found.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+                    booking = found[0] || null;
+                  }
+
+                  if (!booking) throw new Error('No matching booking found to cancel.');
+                  const cancelled = await cancelBooking({ bookingId: booking.id, version: booking.version });
+                  toolResult = { ok: true, booking: { bookingId: cancelled.id, startAt: cancelled.startAt, status: 'CANCELLED' } };
+                }
+
+                if (name === 'square_reschedule_booking') {
+                  // Must have newStartAt
+                  if (!args.newStartAt) throw new Error('newStartAt is required.');
+
+                  let booking = null;
+                  if (args.bookingId) {
+                    booking = await retrieveBooking({ bookingId: args.bookingId });
+                  } else {
+                    const { locationId, teamMemberId } = sqDefaults();
+                    const ids = await resolveCustomerIds({ email: args.email, phone: args.phone, name: args.name });
+                    let startAt, endAt;
+                    if (args.date) ({ startAt, endAt } = dayWindowUTC(args.date));
+                    const found = await searchBookingsByCustomer({ customerIds: ids, locationId, teamMemberId, startAt, endAt });
+                    found.sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+                    booking = found[0] || null;
+                  }
+
+                  if (!booking) throw new Error('No matching booking found to reschedule.');
+                  const updated = await rescheduleBooking({ bookingId: booking.id, newStartAt: args.newStartAt });
+                  toolResult = { ok: true, booking: { bookingId: updated.id, startAt: updated.startAt, status: 'RESCHEDULED' } };
                 }
               } catch (e) {
-                // 🔴 catch & log any tool error so calls don't hang silently
-                app.log.error({ err: e, name }, 'Tool handler error');
                 toolResult = { ok: false, error: String(e?.message || e) };
               }
 
-              // Always send tool result back so the model can keep going
-              try {
-                openAiWs.send(JSON.stringify({
-                  type: 'response.function_call_output',
-                  call_id,
-                  output: JSON.stringify(toolResult)
-                }));
-              } catch (e) {
-                app.log.error({ err: e }, 'Failed to send function_call_output to OpenAI');
-              }
-
-              return; // stop further processing for this message
+              // return tool result to model
+              openAiWs.send(JSON.stringify({
+                type: 'response.function_call_output',
+                call_id,
+                output: JSON.stringify(toolResult)
+              }));
+              return;
             }
 
-            // 2) NORMAL CONTENT EVENTS
+            // Normal content logs
             if (msg.type === 'response.content.done') {
               const txt = (msg?.output_text || '').slice(0, 400);
               app.log.info({ preview: txt }, 'AI final text');
             }
 
-            // 3) AUDIO STREAM BACK TO TWILIO
+            // Audio back to Twilio
             if (msg.type === 'response.audio.delta' && msg.delta && streamSid) {
               connection.send(JSON.stringify({
                 event: 'media',
@@ -519,7 +584,7 @@ fastify.register(async function (app) {
               markQueue.push('responsePart');
             }
 
-            // 4) BARGE-IN: CUT OFF TTS IF CALLER STARTS TALKING
+            // Caller barged in — truncate assistant audio
             if (msg.type === 'input_audio_buffer.speech_started') {
               if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
                 if (lastAssistantItem) {
@@ -546,9 +611,9 @@ fastify.register(async function (app) {
           if (tenantRef?.faq_urls?.length) {
             kbText = await fetchKbText(tenantRef.faq_urls);
           }
-          const instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
+          let instructionsCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
           instructions = tenantRef ? buildInstructions(tenantRef, kbText) : 'You are a helpful salon receptionist.';
-          if (instructions.length > instrCap) instructions = instructions.slice(0, instrCap);
+          if (instructions.length > instructionsCap) instructions = instructions.slice(0, instructionsCap);
 
           tenantReady = true;
           maybeSendSessionUpdate();
