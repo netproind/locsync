@@ -54,7 +54,7 @@ OVERRIDES = Array.isArray(OVERRIDES)
 // ---------- TENANTS ----------
 let TENANTS = {};
 try {
-  const raw = await fs.readFile(new URL('./tenants.json', import.meta.url));
+  const raw = await fs.readFile(new URL('./tenants.js', import.meta.url));
   TENANTS = JSON.parse(String(raw));
 } catch {
   console.warn('tenants.json not found or invalid; TENANTS = {}');
