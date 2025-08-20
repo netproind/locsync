@@ -166,10 +166,10 @@ fastify.get('/', async (_req, reply) => {
 // Dev: Square sanity ping
 fastify.get('/dev/square/ping', async (_req, reply) => {
   try {
-    const res = await locationsApi.listLocations();
+    const locations = await listLocations();
     reply.send({
       ok: true,
-      locations: (res?.result?.locations || []).map(l => ({ id: l.id, name: l.name }))
+      locations: locations.map(l => ({ id: l.id, name: l.name }))
     });
   } catch (e) {
     reply.code(500).send({ ok: false, error: String(e?.message || e) });
