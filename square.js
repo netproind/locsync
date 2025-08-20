@@ -1,8 +1,9 @@
-// square.js — REST-only implementation (no SDK), Node 20 ESM
-// Works with either sandbox or production via SQUARE_ENV + SQUARE_ACCESS_TOKEN.
+// square.js — REST-only (no SDK), Node 20 ESM
+// Uses SQUARE_ENV ("production" | "sandbox") and SQUARE_ACCESS_TOKEN
 
 import { randomUUID } from 'node:crypto';
 
+// ---------- Config ----------
 const envName = (process.env.SQUARE_ENV || 'sandbox').toLowerCase();
 const BASE_URL =
   envName === 'production'
@@ -14,10 +15,10 @@ if (!TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
-// Pick a recent, valid Square-Version (update if Square deprecates later)
+// Pick a recent API version (update if Square deprecates later)
 const SQUARE_VERSION = '2025-05-15';
 
-// ------------------------ core fetch wrapper ------------------------
+// ---------- Core fetch wrapper ----------
 async function sqFetch(path, { method = 'GET', body } = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
@@ -43,41 +44,27 @@ async function sqFetch(path, { method = 'GET', body } = {}) {
   return json;
 }
 
-// ------------------------ small utils ------------------------
+// ---------- Small utils ----------
 function onlyDigits(s = '') {
   return String(s || '').replace(/\D+/g, '');
 }
 function toE164US(phone) {
   const trimmed = (phone || '').trim();
-  if (/^\+/.test(trimmed)) return trimmed;        // already E.164
+  if (/^\+/.test(trimmed)) return trimmed; // already E.164
   const digits = onlyDigits(trimmed);
-  if (digits.length === 10) return `+1${digits}`;  // assume US numbers
+  if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
   return trimmed.startsWith('+') ? trimmed : `+${digits}`;
 }
-function splitName(name = '') {
-  const parts = String(name).trim().split(/\s+/);
-  if (parts.length === 0) return { givenName: undefined, familyName: undefined };
-  if (parts.length === 1) return { givenName: parts[0], familyName: undefined };
-  return { givenName: parts[0], familyName: parts.slice(1).join(' ') };
-}
 
-// ------------------------ Locations ------------------------
+// ---------- Locations ----------
 export async function listLocations() {
   const { locations = [] } = await sqFetch('/v2/locations', { method: 'GET' });
   return locations;
 }
 
-// ------------------------ Customers ------------------------
-// Try to find a customer by exact email, exact phone (E.164), or fuzzy name.
-export async function findCustomer({ phone, email, givenName, familyName, name }) {
-  // allow single "name" param
-  if (name && (!givenName && !familyName)) {
-    const split = splitName(name);
-    givenName = split.givenName;
-    familyName = split.familyName;
-  }
-
+// ---------- Customers ----------
+export async function findCustomer({ phone, email, givenName, familyName }) {
   // exact email
   if (email) {
     const body = { query: { filter: { email_address: { exact: String(email).trim() } } } };
@@ -103,15 +90,6 @@ export async function findCustomer({ phone, email, givenName, familyName, name }
   return null;
 }
 
-export async function resolveCustomerIds({ phone, email, givenName, familyName, name }) {
-  try {
-    const customer = await findCustomer({ phone, email, givenName, familyName, name });
-    return customer ? [customer.id] : [];
-  } catch {
-    return [];
-  }
-}
-
 export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) {
   const existing = await findCustomer({ phone, email });
   if (existing) return existing;
@@ -125,16 +103,27 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   return customer || null;
 }
 
-// ------------------------ Catalog (services) ------------------------
+// Convenience for index.js: return an array of IDs (0 or 1)
+export async function resolveCustomerIds({ phone, email, givenName, familyName, name }) {
+  let gn = givenName, fn = familyName;
+  if (name && (!gn && !fn)) {
+    // naive split "First Last"
+    const parts = String(name).trim().split(/\s+/);
+    gn = parts[0];
+    fn = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
+  }
+  const c = await findCustomer({ phone, email, givenName: gn, familyName: fn });
+  return c ? [c.id] : [];
+}
+
+// ---------- Catalog (services) ----------
 export async function findServiceVariationIdByName({ serviceName }) {
   const body = { text_filter: serviceName };
   const { items = [] } = await sqFetch('/v2/catalog/search-catalog-items', { method: 'POST', body });
   for (const item of items) {
-    if (item?.product_type === 'APPOINTMENTS_SERVICE' || item?.productType === 'APPOINTMENTS_SERVICE') {
-      const vars =
-        item?.item_data?.variations ||
-        item?.itemData?.variations ||
-        [];
+    const isSvc = item?.product_type === 'APPOINTMENTS_SERVICE' || item?.productType === 'APPOINTMENTS_SERVICE';
+    if (isSvc) {
+      const vars = item?.item_data?.variations || item?.itemData?.variations || [];
       if (vars[0]?.id) return vars[0].id;
     }
   }
@@ -149,7 +138,7 @@ async function getServiceVariationVersion(serviceVariationId) {
   return object?.version ?? null;
 }
 
-// ------------------------ Availability & Bookings ------------------------
+// ---------- Availability ----------
 export async function searchAvailability({
   locationId,
   teamMemberId,
@@ -157,7 +146,6 @@ export async function searchAvailability({
   startAt,
   endAt
 }) {
-  // POST /v2/bookings/availability/search (snake_case)
   const body = {
     query: {
       filter: {
@@ -176,7 +164,7 @@ export async function searchAvailability({
   return availabilities;
 }
 
-// Create booking
+// ---------- Bookings: create / list / retrieve / cancel / reschedule ----------
 export async function createBooking({
   locationId,
   teamMemberId,
@@ -200,7 +188,7 @@ export async function createBooking({
           service_variation_id: serviceVariationId,
           service_variation_version: serviceVariationVersion,
           team_member_id: teamMemberId
-          // duration derived from the service variation configuration in Square
+          // duration derived from service variation
         }
       ],
       ...(sellerNote ? { seller_note: sellerNote } : {})
@@ -212,49 +200,108 @@ export async function createBooking({
   return booking || null;
 }
 
-// Search bookings over one or MORE customers.
-// If Square only accepts a single customer_id, we loop and merge results.
+// GET /v2/bookings with filters
+export async function listBookings({
+  customerId,
+  locationId,
+  teamMemberId,
+  startAtMin,  // ISO
+  startAtMax,  // ISO
+  limit = 50,
+  cursor
+}) {
+  const qs = new URLSearchParams();
+  if (customerId)   qs.set('customer_id', customerId);
+  if (locationId)   qs.set('location_id', locationId);
+  if (teamMemberId) qs.set('team_member_id', teamMemberId);
+  if (startAtMin)   qs.set('start_at_min', startAtMin);
+  if (startAtMax)   qs.set('start_at_max', startAtMax);
+  if (limit)        qs.set('limit', String(limit));
+  if (cursor)       qs.set('cursor', cursor);
+
+  const path = `/v2/bookings?${qs.toString()}`;
+  const { bookings = [], cursor: nextCursor } = await sqFetch(path, { method: 'GET' });
+  return { bookings, cursor: nextCursor };
+}
+
+// Support your index.js: search by one or more customerIds (merge results)
 export async function searchBookingsByCustomer({
   customerIds = [],
   locationId,
   teamMemberId,
-  startAt,
-  endAt,
-  status // optional
+  startAt, // ISO start
+  endAt    // ISO end
 }) {
-  const all = [];
-
-  const runOnce = async (customerId) => {
-    const filter = { customer_id: customerId };
-    if (locationId)   filter.location_id   = locationId;
-    if (teamMemberId) filter.team_member_id = teamMemberId;
-    if (status)       filter.status         = status;
-    if (startAt || endAt) {
-      filter.start_at_range = {};
-      if (startAt) filter.start_at_range.start_at = startAt;
-      if (endAt)   filter.start_at_range.end_at   = endAt;
-    }
-
-    const body = {
-      query: { filter, sort: { sort_field: 'START_AT', order: 'ASC' } }
-    };
-    const { bookings = [] } = await sqFetch('/v2/bookings/search', { method: 'POST', body });
-    all.push(...bookings);
-  };
-
-  if (!Array.isArray(customerIds) || customerIds.length === 0) return [];
-
-  for (const id of customerIds) {
-    await runOnce(id);
+  const out = [];
+  for (const cid of customerIds) {
+    let cursor;
+    do {
+      const { bookings, cursor: next } = await listBookings({
+        customerId: cid,
+        locationId,
+        teamMemberId,
+        startAtMin: startAt,
+        startAtMax: endAt,
+        limit: 50,
+        cursor
+      });
+      out.push(...(bookings || []));
+      cursor = next;
+    } while (cursor);
   }
-
-  // de-dupe by booking id
-  const map = new Map();
-  for (const b of all) map.set(b.id, b);
-  return Array.from(map.values());
+  return out;
 }
 
-// Convenience: look ahead from now for one resolved customer
+// Accept either a string id or { bookingId }
+export async function retrieveBooking(param) {
+  const bookingId = typeof param === 'string' ? param : param?.bookingId;
+  if (!bookingId) throw new Error('retrieveBooking: bookingId is required');
+  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}`, { method: 'GET' });
+  return booking || null;
+}
+
+export async function cancelBooking({ bookingId, version }) {
+  if (!bookingId) throw new Error('cancelBooking: bookingId is required');
+  if (version == null) {
+    const current = await retrieveBooking(bookingId);
+    if (!current) throw new Error('cancelBooking: booking not found');
+    version = current.version;
+  }
+  const body = { version };
+  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', body });
+  return booking || null;
+}
+
+export async function rescheduleBooking({ bookingId, newStartAt }) {
+  if (!bookingId) throw new Error('rescheduleBooking: bookingId is required');
+  if (!newStartAt) throw new Error('rescheduleBooking: newStartAt (ISO) is required');
+
+  const current = await retrieveBooking(bookingId);
+  if (!current) throw new Error(`Booking not found: ${bookingId}`);
+
+  // Build the minimal update payload (snake_case)
+  const booking = {
+    id: current.id,
+    version: current.version,
+    location_id: current.location_id || current.locationId,
+    customer_id: current.customer_id || current.customerId,
+    start_at: newStartAt,
+    appointment_segments: (current.appointment_segments || current.appointmentSegments || []).map(seg => ({
+      service_variation_id: seg.service_variation_id || seg.serviceVariationId,
+      service_variation_version: seg.service_variation_version || seg.serviceVariationVersion,
+      team_member_id: seg.team_member_id || seg.teamMemberId
+    }))
+  };
+
+  const body = { idempotency_key: randomUUID(), booking };
+  const { booking: updated } = await sqFetch(
+    `/v2/bookings/${encodeURIComponent(bookingId)}`,
+    { method: 'PUT', body }
+  );
+  return updated || null;
+}
+
+// (Optional) helper you might still use elsewhere
 export async function lookupUpcomingBookingsByPhoneOrEmail({
   phone,
   email,
@@ -268,68 +315,13 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
   if (!customer) return { customer: null, bookings: [] };
 
   const nowIso = new Date().toISOString();
-  const filter = { customer_id: customer.id };
-  if (locationId)   filter.location_id = locationId;
-  if (teamMemberId) filter.team_member_id = teamMemberId;
-  if (!includePast) filter.start_at_range = { start_at: nowIso };
+  const { bookings } = await listBookings({
+    customerId: customer.id,
+    locationId,
+    teamMemberId,
+    startAtMin: includePast ? undefined : nowIso,
+    limit: 50
+  });
 
-  const body = {
-    query: {
-      filter,
-      sort: { sort_field: 'START_AT', order: 'ASC' }
-    }
-  };
-
-  const { bookings = [] } = await sqFetch('/v2/bookings/search', { method: 'POST', body });
   return { customer, bookings };
-}
-
-// Retrieve a single booking (index.js calls retrieveBooking({ bookingId }))
-export async function retrieveBooking({ bookingId }) {
-  if (!bookingId) throw new Error('retrieveBooking: bookingId is required');
-  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}`, { method: 'GET' });
-  return booking || null;
-}
-
-// Cancel a booking by id + version
-export async function cancelBooking({ bookingId, version }) {
-  const body = { version };
-  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', body });
-  return booking || null;
-}
-
-// Reschedule (update start_at) while preserving service/team/segment info.
-export async function rescheduleBooking({ bookingId, newStartAt }) {
-  if (!bookingId) throw new Error('rescheduleBooking: bookingId is required');
-  if (!newStartAt) throw new Error('rescheduleBooking: newStartAt (ISO) is required');
-
-  // Get current booking (snake_case fields from REST)
-  const current = await retrieveBooking({ bookingId });
-  if (!current) throw new Error(`Booking not found: ${bookingId}`);
-
-  const booking = {
-    id: current.id,
-    version: current.version,                  // required for optimistic locking
-    location_id: current.location_id,
-    customer_id: current.customer_id || undefined,
-    start_at: newStartAt,
-    appointment_segments: (current.appointment_segments || []).map(seg => ({
-      service_variation_id: seg.service_variation_id,
-      service_variation_version: seg.service_variation_version,
-      team_member_id: seg.team_member_id
-      // duration is derived from the service variation; don’t set here
-    }))
-  };
-
-  const body = {
-    idempotency_key: randomUUID(),
-    booking
-  };
-
-  // PUT /v2/bookings/{booking_id}
-  const { booking: updated } = await sqFetch(
-    `/v2/bookings/${encodeURIComponent(bookingId)}`,
-    { method: 'PUT', body }
-  );
-  return updated || null;
-}
+  }
