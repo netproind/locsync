@@ -14,7 +14,7 @@ import {
   ensureCustomerByPhoneOrEmail,
   findServiceVariationIdByName,
   listLocations,
-  lookupUpcomingBookingsByPhoneOrEmail   // NEW
+  lookupUpcomingBookingsByPhoneOrEmail
 } from './square.js';
 
 // ---------- ENV ----------
@@ -104,7 +104,8 @@ function sqDefaults() {
     teamMemberId: process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID
   };
 }
-// ---------- INSTRUCTIONS BUILDER ----------
+
+// ---------- INSTRUCTIONS BUILDER (no texting; speak links aloud) ----------
 function buildInstructions(tenant, kbText = '') {
   const style    = tenant?.voice_style || 'warm, professional, concise';
   const services = Array.isArray(tenant?.services) ? tenant.services : [];
@@ -117,7 +118,6 @@ function buildInstructions(tenant, kbText = '') {
     .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
     .join('\n') || '(none)';
 
-  // Helper phrasing hint for speaking links clearly
   const spokenBookingHint = booking === '(unset)'
     ? '(booking link not set)'
     : `When reading this aloud, say it slowly and clearly. If it has slashes/underscores, read them out, e.g., "locrepair dot com slash service underscore portal".`;
@@ -129,7 +129,7 @@ Tone & style: ${style}. Let callers interrupt naturally. Keep answers under 20 s
 HARD RULES ABOUT COMMUNICATION
 - Do NOT offer to text or email anything. Never say you'll send a link or message.
 - Always provide information verbally. If a caller asks for a link, read it aloud slowly and clearly.
-- If the caller asks you to repeat, repeat calmly and slowly.
+- If you need to repeat, repeat calmly and slowly.
 - If you aren't sure of an answer, ask a brief clarifying question. Do not promise to follow up by text/email.
 
 GROUNDING & SOURCES
@@ -141,8 +141,7 @@ BOOKING
 - ${spokenBookingHint}
 - For availability and booking, use the Square tools; do not guess times.
 - If the caller gives a day/time window, first call square_search_availability, then offer 2–3 nearest slots; after they pick, call square_create_booking.
-- If the caller asks whether they already have an appointment, call square_lookup_booking. If you don’t have a phone or email, politely ask for the phone number first; if they don’t know, ask for first and last name.
-- Speak the date and time clearly; do not offer to text or email.
+- If the caller asks whether they already have an appointment, call square_lookup_booking. If you don’t have a phone or email, ask for the phone number first; if they don’t know, ask for first and last name. Speak the result clearly; do not offer to text or email.
 
 SERVICES
 - ${services.join(', ')}
@@ -193,9 +192,6 @@ fastify.get('/dev/square/lookup', async (req, reply) => {
   try {
     const { phone, email, givenName, familyName, includePast } = req.query || {};
     const { locationId, teamMemberId } = sqDefaults();
-
-    // lazy import to avoid circular on top-level
-    const { lookupUpcomingBookingsByPhoneOrEmail } = await import('./square.js');
 
     const out = await lookupUpcomingBookingsByPhoneOrEmail({
       phone: phone || null,
@@ -301,21 +297,6 @@ fastify.register(async function (app) {
               }
             },
             {
-  type: 'function',
-  name: 'square_lookup_booking',
-  description: 'Look up the caller’s upcoming appointments by phone, email, or name. Returns the next upcoming booking(s).',
-  parameters: {
-    type: 'object',
-    properties: {
-      customerPhone: { type: 'string', description: 'E.164 like +13135551234 or US 10 digits; other punctuation allowed.' },
-      customerEmail: { type: 'string', description: 'Customer email (case-insensitive).' },
-      customerGivenName: { type: 'string', description: 'First name, if provided instead of phone/email.' },
-      customerFamilyName: { type: 'string', description: 'Last name, optional for disambiguation.' },
-      includePast: { type: 'boolean', description: 'If true, also return past bookings (sorted by startAt).' }
-    }
-  }
-            },
-            {
               type: 'function',
               name: 'square_create_booking',
               description: 'Creates a booking for the selected slot and caller.',
@@ -330,6 +311,21 @@ fastify.register(async function (app) {
                   note: { type: 'string' }
                 },
                 required: ['startAt']
+              }
+            },
+            {
+              type: 'function',
+              name: 'square_lookup_booking',
+              description: 'Look up the caller’s upcoming appointments by phone, email, or name. Returns the next upcoming booking(s).',
+              parameters: {
+                type: 'object',
+                properties: {
+                  customerPhone: { type: 'string', description: 'E.164 like +13135551234 or US 10 digits; other punctuation allowed.' },
+                  customerEmail: { type: 'string', description: 'Customer email (case-insensitive).' },
+                  customerGivenName: { type: 'string', description: 'First name, if provided instead of phone/email.' },
+                  customerFamilyName: { type: 'string', description: 'Last name, optional for disambiguation.' },
+                  includePast: { type: 'boolean', description: 'If true, also return past bookings (sorted by startAt).' }
+                }
               }
             }
           ]
@@ -370,10 +366,16 @@ fastify.register(async function (app) {
           // ---- OpenAI WS handlers ----
           openAiWs.on('open', () => { openAiReady = true; maybeSendSessionUpdate(); });
 
+          // ---------- REPLACED message handler with catch + logging ----------
           openAiWs.on('message', async (buf) => {
-            let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+            let msg; 
+            try { 
+              msg = JSON.parse(buf.toString()); 
+            } catch { 
+              return; 
+            }
 
-            // Handle function/tool calls from Realtime
+            // 1) TOOL / FUNCTION CALLS FROM REALTIME
             if (msg.type === 'response.function_call') {
               const { name, arguments: argsJson, call_id } = msg;
               let toolResult = null;
@@ -382,12 +384,15 @@ fastify.register(async function (app) {
                 const args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson || {});
                 const { locationId, teamMemberId } = sqDefaults();
 
+                // --- square_search_availability ---
                 if (name === 'square_search_availability') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
                   if (!serviceVariationId && args.serviceName) {
                     serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  if (!serviceVariationId) {
+                    throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  }
 
                   const slots = await searchAvailability({
                     locationId,
@@ -400,52 +405,15 @@ fastify.register(async function (app) {
                   toolResult = { ok: true, slots };
                 }
 
-                if (name === 'square_lookup_booking') {
-  const { locationId, teamMemberId } = sqDefaults();
-  const toUsePhone = args.customerPhone || null;
-  const toUseEmail = args.customerEmail || null;
-  const toUseGiven = args.customerGivenName || null;
-  const toUseFamily = args.customerFamilyName || null;
-
-  try {
-    const { customer, bookings } = await lookupUpcomingBookingsByPhoneOrEmail({
-      phone: toUsePhone,
-      email: toUseEmail,
-      givenName: toUseGiven,
-      familyName: toUseFamily,
-      locationId,
-      teamMemberId,
-      includePast: !!args.includePast
-    });
-
-    toolResult = {
-      ok: true,
-      customer: customer ? {
-        id: customer.id,
-        givenName: customer.givenName,
-        familyName: customer.familyName,
-        phone: customer.phoneNumber,
-        email: customer.emailAddress
-      } : null,
-      bookings: (bookings || []).map(b => ({
-        id: b.id,
-        startAt: b.startAt,
-        locationId: b.locationId,
-        status: b.status
-      }))
-    };
-  } catch (err) {
-    app.log.error({ err }, 'square_lookup_booking failed');
-    toolResult = { ok: false, error: String(err?.message || err) };
-  }
-}
-
+                // --- square_create_booking ---
                 if (name === 'square_create_booking') {
                   let serviceVariationId = process.env.SQUARE_DEFAULT_SERVICE_VARIATION_ID || null;
                   if (!serviceVariationId && args.serviceName) {
                     serviceVariationId = await findServiceVariationIdByName({ serviceName: args.serviceName });
                   }
-                  if (!serviceVariationId) throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  if (!serviceVariationId) {
+                    throw new Error('No service variation found. Set SQUARE_DEFAULT_SERVICE_VARIATION_ID or provide a serviceName that matches a Catalog item.');
+                  }
 
                   const customer = await ensureCustomerByPhoneOrEmail({
                     givenName: args.customerGivenName,
@@ -464,26 +432,72 @@ fastify.register(async function (app) {
 
                   toolResult = { ok: true, booking };
                 }
+
+                // --- square_lookup_booking ---
+                if (name === 'square_lookup_booking') {
+                  const { 
+                    customerPhone, 
+                    customerEmail, 
+                    customerGivenName, 
+                    customerFamilyName, 
+                    includePast 
+                  } = (typeof args === 'object' && args) ? args : {};
+
+                  const { customer, bookings } = await lookupUpcomingBookingsByPhoneOrEmail({
+                    phone: customerPhone || null,
+                    email: customerEmail || null,
+                    givenName: customerGivenName || null,
+                    familyName: customerFamilyName || null,
+                    locationId,
+                    teamMemberId,
+                    includePast: !!includePast
+                  });
+
+                  toolResult = {
+                    ok: true,
+                    customer: customer ? {
+                      id: customer.id,
+                      givenName: customer.givenName,
+                      familyName: customer.familyName,
+                      phone: customer.phoneNumber,
+                      email: customer.emailAddress
+                    } : null,
+                    bookings: (bookings || []).map(b => ({
+                      id: b.id,
+                      startAt: b.startAt,
+                      locationId: b.locationId,
+                      status: b.status
+                    }))
+                  };
+                }
               } catch (e) {
+                // 🔴 catch & log any tool error so calls don't hang silently
+                app.log.error({ err: e, name }, 'Tool handler error');
                 toolResult = { ok: false, error: String(e?.message || e) };
               }
 
-              // Send tool result back so the model can continue speaking
-              openAiWs.send(JSON.stringify({
-                type: 'response.function_call_output',
-                call_id,
-                output: JSON.stringify(toolResult)
-              }));
-              return; // stop further processing on this message
+              // Always send tool result back so the model can keep going
+              try {
+                openAiWs.send(JSON.stringify({
+                  type: 'response.function_call_output',
+                  call_id,
+                  output: JSON.stringify(toolResult)
+                }));
+              } catch (e) {
+                app.log.error({ err: e }, 'Failed to send function_call_output to OpenAI');
+              }
+
+              return; // stop further processing for this message
             }
 
+            // 2) NORMAL CONTENT EVENTS
             if (msg.type === 'response.content.done') {
               const txt = (msg?.output_text || '').slice(0, 400);
               app.log.info({ preview: txt }, 'AI final text');
             }
 
+            // 3) AUDIO STREAM BACK TO TWILIO
             if (msg.type === 'response.audio.delta' && msg.delta && streamSid) {
-              // audio back to Twilio
               connection.send(JSON.stringify({
                 event: 'media',
                 streamSid,
@@ -495,13 +509,12 @@ fastify.register(async function (app) {
               }
               if (msg.item_id) lastAssistantItem = msg.item_id;
 
-              // optional mark for playback boundary
               connection.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'responsePart' } }));
               markQueue.push('responsePart');
             }
 
+            // 4) BARGE-IN: CUT OFF TTS IF CALLER STARTS TALKING
             if (msg.type === 'input_audio_buffer.speech_started') {
-              // truncate assistant audio if caller starts talking
               if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
                 if (lastAssistantItem) {
                   openAiWs.send(JSON.stringify({
@@ -512,10 +525,13 @@ fastify.register(async function (app) {
                   }));
                 }
                 connection.send(JSON.stringify({ event: 'clear', streamSid }));
-                markQueue = []; lastAssistantItem = null; responseStartTimestampTwilio = null;
+                markQueue = [];
+                lastAssistantItem = null;
+                responseStartTimestampTwilio = null;
               }
             }
           });
+          // ---------- END replaced message handler ----------
 
           openAiWs.on('error', (err) => app.log.error({ err }, 'OpenAI WS error'));
           openAiWs.on('close', () => app.log.info('OpenAI WS closed'));
@@ -525,7 +541,7 @@ fastify.register(async function (app) {
           if (tenantRef?.faq_urls?.length) {
             kbText = await fetchKbText(tenantRef.faq_urls);
           }
-          let instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
+          const instrCap = tenantRef?.instructions_char_cap || DEFAULTS.instructions_char_cap;
           instructions = tenantRef ? buildInstructions(tenantRef, kbText) : 'You are a helpful salon receptionist.';
           if (instructions.length > instrCap) instructions = instructions.slice(0, instrCap);
 
