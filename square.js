@@ -1,20 +1,19 @@
 // square.js — Square SDK helpers (ESM, Node 20)
-// Uses customUrl instead of Environment/environments to avoid SDK export issues.
+// Robust against CJS/ESM export differences by using createRequire.
+// Also uses customUrl instead of Environment/environments.
 
-import squarePkg from 'square';
+import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 
-// Be resilient to different module shapes
-const Client =
-  squarePkg?.Client ||
-  squarePkg?.default?.Client ||
-  (squarePkg && squarePkg['Client']);
+const require = createRequire(import.meta.url);
+const squarePkg = require('square'); // load CJS reliably
 
+const { Client } = squarePkg;
 if (!Client) {
-  throw new Error('Square SDK: Client export not found. Is the "square" package installed?');
+  throw new Error('Square SDK: Client export not found from "square" package.');
 }
 
-// ---- Resolve base URL by env name (no Environment enum needed) -------------
+// ---- Base URL by env name (no Environment enum needed) ---------------------
 const envName = (process.env.SQUARE_ENV || 'sandbox').toLowerCase();
 const baseUrl =
   envName === 'production'
