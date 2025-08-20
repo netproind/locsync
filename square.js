@@ -1,14 +1,41 @@
-// square.js — Square SDK helpers (ESM app + CommonJS SDK)
+// square.js — Square SDK helpers (robust across SDK versions)
 import squarePkg from 'square';
 import { randomUUID } from 'node:crypto';
 
-// NOTE: in square@^43 the export is `environments` (lowercase), not `Environment`
-const { Client, environments } = squarePkg;
+// Handle both ESM/CJS and both env enums:
+//   - older/newer SDKs: Environment.{Production,Sandbox}
+//   - some builds:     environments.{production,sandbox}
+const Client =
+  squarePkg.Client || squarePkg.default?.Client;
 
-const env =
-  (process.env.SQUARE_ENV || 'sandbox').toLowerCase() === 'production'
-    ? environments.production
-    : environments.sandbox;
+const EnvironmentObj =
+  squarePkg.Environment ||
+  squarePkg.environments ||
+  squarePkg.EnvironmentEnum ||
+  squarePkg.default?.Environment ||
+  squarePkg.default?.environments;
+
+if (!Client || !EnvironmentObj) {
+  throw new Error('Square SDK not loaded as expected — Client/Environment missing from package "square".');
+}
+
+// Map our SQUARE_ENV to the SDK’s enum (handles both capitalized and lowercase variants)
+function resolveSdkEnv(s) {
+  const prod =
+    EnvironmentObj.Production ??
+    EnvironmentObj.production;
+  const sand =
+    EnvironmentObj.Sandbox ??
+    EnvironmentObj.sandbox;
+
+  const wanted = (s || 'sandbox').toLowerCase() === 'production' ? prod : sand;
+  if (!wanted) {
+    throw new Error('Could not resolve Square environment enum from SDK.');
+  }
+  return wanted;
+}
+
+const env = resolveSdkEnv(process.env.SQUARE_ENV);
 
 export const square = new Client({
   environment: env,
@@ -65,7 +92,7 @@ async function getServiceVariationVersion(serviceVariationId) {
   return res?.result?.object?.version ?? null;
 }
 
-// Search availability for a service/team/location between startAt and endAt (ISO strings)
+// Search availability
 export async function searchAvailability({
   locationId,
   teamMemberId,
@@ -90,7 +117,7 @@ export async function searchAvailability({
   return result?.availabilities || [];
 }
 
-// Create a booking for the chosen slot and customer
+// Create a booking
 export async function createBooking({
   locationId,
   teamMemberId,
@@ -111,7 +138,7 @@ export async function createBooking({
       customerId,
       appointmentSegments: [
         {
-          // Duration is read from the service variation configuration
+          // Duration comes from the service variation config in Square
           serviceVariationId,
           serviceVariationVersion,
           teamMemberId
@@ -126,7 +153,7 @@ export async function createBooking({
   return result.booking;
 }
 
-// Cancel a booking by id + version
+// Cancel a booking
 export async function cancelBooking({ bookingId, version }) {
   const { result } = await bookingsApi.cancelBooking(bookingId, { version });
   return result.booking;
