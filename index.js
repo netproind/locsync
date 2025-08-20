@@ -28,11 +28,14 @@ import { DateTime } from 'luxon';
 
 function speakTime(iso, tz = 'America/Detroit') {
   if (!iso) return '';
+  // If the ISO string has a zone/offset, respect it. Otherwise assume tenant tz.
   let dt = DateTime.fromISO(iso, { setZone: true });
-  if (!dt.isValid) return iso;
-  return dt.toZone(tz).toFormat("cccc, LLLL d 'at' h:mm a");
+  if (!dt.isValid || !dt.zoneName) {
+    dt = DateTime.fromISO(iso, { zone: tz });
+  }
+  const local = dt.toZone(tz);
+  return local.toFormat("cccc, LLLL d 'at' h:mm a");
 }
-
 // ---------- ENV ----------
 dotenv.config();
 const { OPENAI_API_KEY, NODE_ENV } = process.env;
