@@ -1,189 +1,176 @@
-// square.js — Square API helpers
-// package.json must have: "type": "module"
+// square.js — Square API helpers (ESM)
 
-import fetch from "node-fetch";
+import dotenv from "dotenv";
+dotenv.config();
 
-// ---------- CONFIG ----------
-const SQUARE_API_BASE = "https://connect.squareup.com/v2";
-const SQUARE_TOKEN = process.env.SQUARE_ACCESS_TOKEN;
-if (!SQUARE_TOKEN) {
-  console.error("❌ Missing SQUARE_ACCESS_TOKEN (set in Render → Environment).");
+const { SQUARE_ACCESS_TOKEN } = process.env;
+if (!SQUARE_ACCESS_TOKEN) {
+  console.error("Missing SQUARE_ACCESS_TOKEN in environment.");
   process.exit(1);
 }
 
+const BASE = "https://connect.squareup.com/v2";
+
 // ---------- INTERNAL FETCH WRAPPER ----------
-async function sqFetch(path, opts = {}) {
-  const res = await fetch(`${SQUARE_API_BASE}${path}`, {
-    ...opts,
+async function sqFetch(path, options = {}) {
+  const res = await fetch(BASE + path, {
+    ...options,
     headers: {
-      "Square-Version": "2025-02-20",
-      "Authorization": `Bearer ${SQUARE_TOKEN}`,
       "Content-Type": "application/json",
-      ...(opts.headers || {})
-    }
+      Authorization: `Bearer ${SQUARE_ACCESS_TOKEN}`,
+      ...options.headers,
+    },
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Square API ${path} failed ${res.status}: ${text}`);
+    const txt = await res.text();
+    throw new Error(`Square API error: ${res.status} ${txt}`);
   }
   return res.json();
 }
 
-// ---------- PHONE NORMALIZER ----------
+// ---------- HELPER: Normalize phone ----------
 export function toE164US(input) {
   if (!input) return null;
-  let digits = String(input).replace(/\D+/g, "");
+  const digits = String(input).replace(/\D/g, "");
+  if (!digits) return null;
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   if (digits.startsWith("+")) return digits;
   return `+1${digits}`;
 }
 
-// ---------- CUSTOMER HELPERS ----------
-export async function ensureCustomerByPhoneOrEmail({ phone, email, givenName, familyName }) {
-  let query = [];
-  if (phone) query.push({ phone_number: toE164US(phone) });
-  if (email) query.push({ email_address: email });
-
-  let found = [];
-  if (query.length) {
-    const res = await sqFetch("/customers/search", {
-      method: "POST",
-      body: JSON.stringify({ query: { filter: { ...query[0] } } })
-    });
-    found = res.customers || [];
-  }
-
-  if (found.length) return found[0];
-
-  // Create if none found
-  const res = await sqFetch("/customers", {
-    method: "POST",
-    body: JSON.stringify({
-      given_name: givenName,
-      family_name: familyName,
-      phone_number: phone ? toE164US(phone) : undefined,
-      email_address: email || undefined
-    })
-  });
-  return res.customer;
-}
-
-export async function resolveCustomerIds({ phone, email }) {
-  const e164 = phone ? toE164US(phone) : null;
-  let found = [];
-  if (e164) {
-    const res = await sqFetch("/customers/search", {
-      method: "POST",
-      body: JSON.stringify({
-        query: { filter: { phone_number: { exact: e164 } } }
-      })
-    });
-    found = res.customers || [];
-  }
-  if (!found.length && email) {
-    const res = await sqFetch("/customers/search", {
-      method: "POST",
-      body: JSON.stringify({
-        query: { filter: { email_address: { exact: email } } }
-      })
-    });
-    found = res.customers || [];
-  }
-  return found.map(c => c.id);
-}
-
-// ---------- LOCATIONS ----------
+// ---------- LIST LOCATIONS ----------
 export async function listLocations() {
-  const res = await sqFetch("/locations");
-  return res.locations || [];
+  return sqFetch("/locations");
 }
 
-// ---------- SERVICES ----------
-export async function findServiceVariationIdByName(catalogObjectName) {
-  const res = await sqFetch("/catalog/search", {
-    method: "POST",
-    body: JSON.stringify({
-      object_types: ["ITEM"],
-      query: {
-        text_query: { keywords: [catalogObjectName] }
-      }
-    })
-  });
-  const items = res.objects || [];
-  for (const item of items) {
-    for (const variation of item.item_data?.variations || []) {
-      return variation.id;
+// ---------- FIND SERVICE VARIATION BY NAME ----------
+export async function findServiceVariationIdByName(serviceName) {
+  const catalog = await sqFetch("/catalog/list?types=ITEM");
+  for (const obj of catalog.objects || []) {
+    if (obj.item_data?.name?.toLowerCase() === serviceName.toLowerCase()) {
+      const variations = obj.item_data.variations || [];
+      if (variations.length > 0) return variations[0].id;
     }
   }
   return null;
 }
 
-// ---------- AVAILABILITY ----------
-export async function searchAvailability({ locationId, teamMemberId, startAt, endAt, serviceVariationId }) {
-  const res = await sqFetch("/bookings/availability/search", {
+// ---------- ENSURE CUSTOMER ----------
+export async function ensureCustomerByPhoneOrEmail({
+  phone,
+  email,
+  givenName,
+  familyName,
+}) {
+  // Try search
+  let body = { query: { filter: {} } };
+  if (phone) {
+    body.query.filter.phone_number = { exact: phone };
+  } else if (email) {
+    body.query.filter.email_address = { exact: email };
+  }
+  let found = null;
+  try {
+    const res = await sqFetch("/customers/search", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (res.customers?.length) found = res.customers[0];
+  } catch {}
+
+  if (found) return found;
+
+  // Create new
+  const payload = {
+    given_name: givenName || "Guest",
+    family_name: familyName,
+    phone_number: phone,
+    email_address: email,
+  };
+  const res = await sqFetch("/customers", {
     method: "POST",
-    body: JSON.stringify({
-      query: {
-        filter: {
-          location_id: locationId,
-          segment_filters: [
-            {
-              service_variation_id: serviceVariationId,
-              team_member_id_filter: { any: [teamMemberId] }
-            }
-          ],
-          start_at_range: { start_at: startAt, end_at: endAt }
-        }
-      }
-    })
+    body: JSON.stringify(payload),
   });
-  return res.availabilities || [];
+  return res.customer;
 }
 
-// ---------- BOOKINGS ----------
-export async function createBooking({ locationId, teamMemberId, customerId, serviceVariationId, startAt }) {
-  const res = await sqFetch("/bookings", {
+// ---------- RESOLVE CUSTOMER IDS ----------
+export async function resolveCustomerIds({ phone, email }) {
+  const ids = [];
+  const body = { query: { filter: {} } };
+  if (phone) {
+    body.query.filter.phone_number = { exact: phone };
+  } else if (email) {
+    body.query.filter.email_address = { exact: email };
+  }
+  const res = await sqFetch("/customers/search", {
     method: "POST",
-    body: JSON.stringify({
-      booking: {
+    body: JSON.stringify(body),
+  });
+  if (res.customers?.length) {
+    res.customers.forEach((c) => ids.push(c.id));
+  }
+  return ids;
+}
+
+// ---------- SEARCH AVAILABILITY ----------
+export async function searchAvailability({
+  locationId,
+  teamMemberId,
+  startAt,
+  endAt,
+  serviceVariationId,
+}) {
+  const body = {
+    query: {
+      filter: {
         location_id: locationId,
-        customer_id: customerId,
-        start_at: startAt,
-        appointment_segments: [
+        segment_filters: [
           {
-            duration_minutes: 60,
             service_variation_id: serviceVariationId,
-            team_member_id: teamMemberId
-          }
-        ]
-      }
-    })
+            team_member_id_filter: { any: [teamMemberId] },
+          },
+        ],
+        start_at_range: { start_at: startAt, end_at: endAt },
+      },
+    },
+  };
+  return sqFetch("/bookings/availability/search", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
-  return res.booking;
 }
 
-export async function retrieveBooking(id) {
-  const res = await sqFetch(`/bookings/${id}`);
-  return res.booking;
-}
-
-export async function cancelBooking(id) {
-  const res = await sqFetch(`/bookings/${id}/cancel`, { method: "POST" });
-  return res.booking;
-}
-
-export async function rescheduleBooking({ id, startAt }) {
-  const res = await sqFetch(`/bookings/${id}`, {
-    method: "PUT",
-    body: JSON.stringify({
-      booking: { start_at: startAt }
-    })
+// ---------- CREATE BOOKING ----------
+export async function createBooking({
+  customerId,
+  locationId,
+  teamMemberId,
+  serviceVariationId,
+  startAt,
+}) {
+  const body = {
+    booking: {
+      location_id: locationId,
+      customer_id: customerId,
+      start_at: startAt,
+      appointment_segments: [
+        {
+          duration_minutes: 60,
+          service_variation_id: serviceVariationId,
+          team_member_id: teamMemberId,
+        },
+      ],
+    },
+  };
+  return sqFetch("/bookings", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
-  return res.booking;
 }
 
-// Lookup bookings by phone/email (recent + upcoming)
+// ---------- LOOKUP UPCOMING BOOKINGS ----------
 export async function lookupUpcomingBookingsByPhoneOrEmail({
   phone,
   email,
@@ -191,7 +178,7 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
   familyName,
   locationId,
   teamMemberId,
-  includePast = false
+  includePast = false,
 }) {
   const customerIds = await resolveCustomerIds({ phone, email });
   if (!customerIds.length) return { bookings: [] };
@@ -203,17 +190,44 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
         filter: {
           customer_ids: customerIds,
           location_id: locationId,
-          team_member_id_filter: teamMemberId ? { any: [teamMemberId] } : undefined
-        }
-      }
-    })
+        },
+      },
+    }),
   });
-  let bookings = res.bookings || [];
 
+  let bookings = res.bookings || [];
   if (!includePast) {
     const now = Date.now();
-    bookings = bookings.filter(b => new Date(b.start_at).getTime() >= now);
+    bookings = bookings.filter(
+      (b) => new Date(b.start_at || b.startAt).getTime() >= now
+    );
   }
 
   return { bookings };
 }
+
+// ---------- RETRIEVE BOOKING ----------
+export async function retrieveBooking(id) {
+  return sqFetch(`/bookings/${id}`);
+}
+
+// ---------- RESCHEDULE BOOKING ----------
+export async function rescheduleBooking(id, newStartAt) {
+  const body = {
+    booking: {
+      start_at: newStartAt,
+    },
+  };
+  return sqFetch(`/bookings/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------- CANCEL BOOKING ----------
+export async function cancelBooking(id) {
+  return sqFetch(`/bookings/${id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+    }
