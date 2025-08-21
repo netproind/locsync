@@ -7,7 +7,7 @@ import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import fs from 'node:fs/promises';
-import { DateTime } from 'luxon';
+
 
 import {
   listLocations,
@@ -120,9 +120,16 @@ function dayWindowUTC(isoDate) {
 
 function speakTime(iso, tz = 'America/Detroit') {
   if (!iso) return '';
-  let dt = DateTime.fromISO(iso, { setZone: true });
-  if (!dt.isValid || !dt.zoneName) dt = DateTime.fromISO(iso, { zone: tz });
-  return dt.toZone(tz).toFormat("cccc, LLLL d 'at' h:mm a");
+  // Square returns RFC3339/ISO with timezone offset or Z, so Date parses correctly.
+  const dt = new Date(iso);
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(dt);
 }
 
 // ---------- INSTRUCTIONS BUILDER ----------
