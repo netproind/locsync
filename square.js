@@ -14,7 +14,7 @@ if (!TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
-// Pick a recent, valid Square-Version (update later if Square deprecates)
+// Pick a recent, valid Square-Version
 const SQUARE_VERSION = '2025-05-15';
 
 // ------------------------ core fetch wrapper ------------------------
@@ -47,6 +47,7 @@ async function sqFetch(path, { method = 'GET', body } = {}) {
 function onlyDigits(s = '') {
   return String(s || '').replace(/\D+/g, '');
 }
+
 function toE164US(phone) {
   const trimmed = (phone || '').trim();
   if (/^\+/.test(trimmed)) return trimmed;        // already E.164
@@ -62,13 +63,10 @@ export async function listLocations() {
   return locations;
 }
 
-// ------------------------ Customers (robust) ------------------------
-
-// Internal: paginate SearchCustomers (handles >100 results)
+// ------------------------ Customers ------------------------
 async function searchCustomersAll({ email, phone, text }) {
   const out = [];
 
-  // Strategy 1 — exact email
   if (email) {
     let cursor;
     do {
@@ -84,7 +82,6 @@ async function searchCustomersAll({ email, phone, text }) {
     if (out.length) return out;
   }
 
-  // Strategy 2 — exact phone (E.164)
   if (phone) {
     let cursor;
     const e164 = toE164US(phone);
@@ -101,15 +98,10 @@ async function searchCustomersAll({ email, phone, text }) {
     if (out.length) return out;
   }
 
-  // Strategy 3 — text_filter for name/company/email/phone prefix matching
   if (text) {
     let cursor;
     do {
-      const body = {
-        limit: 100,
-        cursor,
-        query: { text_filter: String(text).trim() }
-      };
+      const body = { limit: 100, cursor, query: { text_filter: String(text).trim() } };
       const res = await sqFetch('/v2/customers/search', { method: 'POST', body });
       out.push(...(res.customers || []));
       cursor = res.cursor || null;
@@ -119,32 +111,28 @@ async function searchCustomersAll({ email, phone, text }) {
   return out;
 }
 
-// Return the single best match if possible; otherwise first match.
-// Accepts any combo of {phone, email, givenName, familyName}.
 export async function findCustomer({ phone, email, givenName, familyName }) {
   const text =
     (givenName && familyName) ? `${givenName} ${familyName}` :
-    (givenName || familyName) ? (givenName || familyName)  :
+    (givenName || familyName) ? (givenName || familyName) :
     null;
 
   const customers = await searchCustomersAll({ email, phone, text });
   if (!customers.length) return null;
 
-  // Prefer exact email
   if (email) {
     const exactEmail = customers.find(
       c => c.email_address && c.email_address.toLowerCase() === String(email).trim().toLowerCase()
     );
     if (exactEmail) return exactEmail;
   }
-  // Prefer exact phone
+
   if (phone) {
     const e164 = toE164US(phone);
     const exactPhone = customers.find(c => c.phone_number && c.phone_number === e164);
     if (exactPhone) return exactPhone;
   }
 
-  // Fall back to most recently updated
   customers.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
   return customers[0];
 }
@@ -162,7 +150,6 @@ export async function ensureCustomerByPhoneOrEmail({ givenName, phone, email }) 
   return customer || null;
 }
 
-// Keep index.js happy if it expects an array of IDs.
 export async function resolveCustomerIds({ phone, email, givenName, familyName }) {
   try {
     const c = await findCustomer({ phone, email, givenName, familyName });
@@ -172,7 +159,7 @@ export async function resolveCustomerIds({ phone, email, givenName, familyName }
   }
 }
 
-// ------------------------ Catalog (services) ------------------------
+// ------------------------ Catalog ------------------------
 export async function findServiceVariationIdByName({ serviceName }) {
   const body = { text_filter: serviceName };
   const { items = [] } = await sqFetch('/v2/catalog/search-catalog-items', { method: 'POST', body });
@@ -205,7 +192,6 @@ export async function searchAvailability({
   startAt,
   endAt
 }) {
-  // POST /v2/bookings/availability/search (snake_case)
   const body = {
     query: {
       filter: {
@@ -224,13 +210,12 @@ export async function searchAvailability({
   return availabilities;
 }
 
-// Internal: search bookings for many customer IDs, 31-day window, with pagination
 async function searchBookingsByCustomerIds({
   customerIds,
   locationId,
   teamMemberId,
-  startAtMin, // ISO
-  startAtMax  // ISO (within 31 days of min)
+  startAtMin,
+  startAtMax
 }) {
   const all = [];
   for (const customerId of customerIds) {
@@ -240,7 +225,7 @@ async function searchBookingsByCustomerIds({
         customer_id: customerId,
         start_at_range: { start_at: startAtMin, end_at: startAtMax }
       };
-      if (locationId)   filter.location_id = locationId;
+      if (locationId) filter.location_id = locationId;
       if (teamMemberId) filter.team_member_id = teamMemberId;
 
       const body = {
@@ -260,12 +245,6 @@ async function searchBookingsByCustomerIds({
   return all;
 }
 
-/**
- * Look up bookings by identifiers. Supports name/email/phone.
- * Honors Square’s 31-day search window:
- *  - If `date` is provided, searches that exact day (00:00–23:59:59 UTC).
- *  - Else searches [now, now+31d] (or [now-31d, now+31d] if includePast).
- */
 export async function lookupUpcomingBookingsByPhoneOrEmail({
   phone,
   email,
@@ -273,7 +252,7 @@ export async function lookupUpcomingBookingsByPhoneOrEmail({
   familyName,
   locationId,
   teamMemberId,
-  date,          // 'YYYY-MM-DD' optional
+  date,
   includePast = false
 }) {
   const primary = await findCustomer({ phone, email, givenName, familyName });
@@ -328,7 +307,6 @@ export async function createBooking({
           service_variation_id: serviceVariationId,
           service_variation_version: serviceVariationVersion,
           team_member_id: teamMemberId
-          // duration derived from the service variation configuration in Square
         }
       ],
       ...(sellerNote ? { seller_note: sellerNote } : {})
@@ -340,7 +318,6 @@ export async function createBooking({
   return booking || null;
 }
 
-// Retrieve a single booking (to get its version & segments)
 export async function retrieveBooking(bookingId) {
   if (!bookingId) throw new Error('retrieveBooking: bookingId is required');
   const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}`, { method: 'GET' });
@@ -353,7 +330,6 @@ export async function cancelBooking({ bookingId, version }) {
   return booking || null;
 }
 
-// Reschedule (update start_at) while preserving service/team/segments.
 export async function rescheduleBooking({ bookingId, newStartAt }) {
   if (!bookingId) throw new Error('rescheduleBooking: bookingId is required');
   if (!newStartAt) throw new Error('rescheduleBooking: newStartAt (ISO) is required');
@@ -363,7 +339,7 @@ export async function rescheduleBooking({ bookingId, newStartAt }) {
 
   const booking = {
     id: current.id,
-    version: current.version,                       // optimistic lock
+    version: current.version,
     location_id: current.location_id || current.locationId,
     customer_id: current.customer_id || current.customerId || undefined,
     start_at: newStartAt,
@@ -385,4 +361,6 @@ export async function rescheduleBooking({ bookingId, newStartAt }) {
   );
   return updated || null;
 }
+
+// ✅ Export helpers so index.js can import
 export { toE164US, onlyDigits };
