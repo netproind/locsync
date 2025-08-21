@@ -1,21 +1,21 @@
 {
-  "name": "speech-assistant-openai-realtime-api-node",
+  "name": "locsync",
   "version": "1.0.0",
-  "description": "Voice AI receptionist with OpenAI Realtime + Twilio + Square",
-  "main": "index.js",
+  "description": "Voice receptionist with Twilio, OpenAI Realtime, and Square integration",
   "type": "module",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "NODE_ENV=development nodemon index.js"
   },
   "dependencies": {
-    "@fastify/formbody": "^8.0.0",
-    "@fastify/websocket": "^11.0.0",
+    "@fastify/formbody": "^7.4.0",
+    "@fastify/websocket": "^8.3.0",
     "dotenv": "^16.4.5",
-    "fastify": "^5.0.0",
-    "ws": "^8.18.0",
-    "luxon": "^3.5.0",
-    "square": "^37.1.1",
+    "fastify": "^4.26.2",
+    "libphonenumber-js": "^1.11.4",
+    "square": "^36.0.0",
     "twilio": "^4.22.0",
-    "libphonenumber-js": "^1.11.7"
+    "ws": "^8.17.0"
   }
 }
