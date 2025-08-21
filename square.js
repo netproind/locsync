@@ -1,233 +1,163 @@
-// square.js — Square API helpers (ESM)
+// square.js — Square API helpers
+import { Client, Environment } from 'square';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 
-import dotenv from "dotenv";
-dotenv.config();
+const client = new Client({
+  accessToken: process.env.SQUARE_ACCESS_TOKEN,
+  environment: process.env.NODE_ENV === 'production'
+    ? Environment.Production
+    : Environment.Sandbox
+});
 
-const { SQUARE_ACCESS_TOKEN } = process.env;
-if (!SQUARE_ACCESS_TOKEN) {
-  console.error("Missing SQUARE_ACCESS_TOKEN in environment.");
-  process.exit(1);
-}
+const { customersApi, bookingsApi, catalogApi } = client;
 
-const BASE = "https://connect.squareup.com/v2";
-
-// ---------- INTERNAL FETCH WRAPPER ----------
-async function sqFetch(path, options = {}) {
-  const res = await fetch(BASE + path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${SQUARE_ACCESS_TOKEN}`,
-      ...options.headers,
-    },
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Square API error: ${res.status} ${txt}`);
-  }
-  return res.json();
-}
-
-// ---------- HELPER: Normalize phone ----------
-export function toE164US(input) {
-  if (!input) return null;
-  const digits = String(input).replace(/\D/g, "");
-  if (!digits) return null;
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  if (digits.startsWith("+")) return digits;
-  return `+1${digits}`;
-}
-
-// ---------- LIST LOCATIONS ----------
-export async function listLocations() {
-  return sqFetch("/locations");
-}
-
-// ---------- FIND SERVICE VARIATION BY NAME ----------
-export async function findServiceVariationIdByName(serviceName) {
-  const catalog = await sqFetch("/catalog/list?types=ITEM");
-  for (const obj of catalog.objects || []) {
-    if (obj.item_data?.name?.toLowerCase() === serviceName.toLowerCase()) {
-      const variations = obj.item_data.variations || [];
-      if (variations.length > 0) return variations[0].id;
-    }
-  }
-  return null;
-}
-
-// ---------- ENSURE CUSTOMER ----------
-export async function ensureCustomerByPhoneOrEmail({
-  phone,
-  email,
-  givenName,
-  familyName,
-}) {
-  // Try search
-  let body = { query: { filter: {} } };
-  if (phone) {
-    body.query.filter.phone_number = { exact: phone };
-  } else if (email) {
-    body.query.filter.email_address = { exact: email };
-  }
-  let found = null;
+// -------- PHONE NORMALIZER --------
+export function toE164US(phone) {
+  if (!phone) return null;
   try {
-    const res = await sqFetch("/customers/search", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    if (res.customers?.length) found = res.customers[0];
-  } catch {}
-
-  if (found) return found;
-
-  // Create new
-  const payload = {
-    given_name: givenName || "Guest",
-    family_name: familyName,
-    phone_number: phone,
-    email_address: email,
-  };
-  const res = await sqFetch("/customers", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  return res.customer;
-}
-
-// ---------- RESOLVE CUSTOMER IDS ----------
-export async function resolveCustomerIds({ phone, email }) {
-  const ids = [];
-  const body = { query: { filter: {} } };
-  if (phone) {
-    body.query.filter.phone_number = { exact: phone };
-  } else if (email) {
-    body.query.filter.email_address = { exact: email };
+    const parsed = parsePhoneNumberFromString(phone, 'US');
+    return parsed?.isValid() ? parsed.number : null;
+  } catch {
+    return null;
   }
-  const res = await sqFetch("/customers/search", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-  if (res.customers?.length) {
-    res.customers.forEach((c) => ids.push(c.id));
-  }
-  return ids;
 }
 
-// ---------- SEARCH AVAILABILITY ----------
-export async function searchAvailability({
-  locationId,
-  teamMemberId,
-  startAt,
-  endAt,
-  serviceVariationId,
-}) {
-  const body = {
-    query: {
-      filter: {
-        location_id: locationId,
-        segment_filters: [
-          {
-            service_variation_id: serviceVariationId,
-            team_member_id_filter: { any: [teamMemberId] },
-          },
-        ],
-        start_at_range: { start_at: startAt, end_at: endAt },
-      },
-    },
-  };
-  return sqFetch("/bookings/availability/search", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-// ---------- CREATE BOOKING ----------
-export async function createBooking({
-  customerId,
-  locationId,
-  teamMemberId,
-  serviceVariationId,
-  startAt,
-}) {
-  const body = {
-    booking: {
-      location_id: locationId,
-      customer_id: customerId,
-      start_at: startAt,
-      appointment_segments: [
-        {
-          duration_minutes: 60,
-          service_variation_id: serviceVariationId,
-          team_member_id: teamMemberId,
-        },
-      ],
-    },
-  };
-  return sqFetch("/bookings", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-// ---------- LOOKUP UPCOMING BOOKINGS ----------
-export async function lookupUpcomingBookingsByPhoneOrEmail({
-  phone,
-  email,
-  givenName,
-  familyName,
-  locationId,
-  teamMemberId,
-  includePast = false,
-}) {
-  const customerIds = await resolveCustomerIds({ phone, email });
-  if (!customerIds.length) return { bookings: [] };
-
-  const res = await sqFetch("/bookings/search", {
-    method: "POST",
-    body: JSON.stringify({
+// -------- CUSTOMER HELPERS --------
+export async function ensureCustomerByPhoneOrEmail({ phone, email }) {
+  try {
+    const searchReq = {
       query: {
         filter: {
-          customer_ids: customerIds,
-          location_id: locationId,
-        },
-      },
-    }),
-  });
-
-  let bookings = res.bookings || [];
-  if (!includePast) {
-    const now = Date.now();
-    bookings = bookings.filter(
-      (b) => new Date(b.start_at || b.startAt).getTime() >= now
-    );
-  }
-
-  return { bookings };
-}
-
-// ---------- RETRIEVE BOOKING ----------
-export async function retrieveBooking(id) {
-  return sqFetch(`/bookings/${id}`);
-}
-
-// ---------- RESCHEDULE BOOKING ----------
-export async function rescheduleBooking(id, newStartAt) {
-  const body = {
-    booking: {
-      start_at: newStartAt,
-    },
-  };
-  return sqFetch(`/bookings/${id}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
-}
-
-// ---------- CANCEL BOOKING ----------
-export async function cancelBooking(id) {
-  return sqFetch(`/bookings/${id}/cancel`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
+          emailAddress: email ? { exact: email } : undefined,
+          phoneNumber: phone ? { exact: phone } : undefined
+        }
+      }
+    };
+    const res = await customersApi.searchCustomers(searchReq);
+    if (res?.result?.customers?.length) {
+      return res.result.customers[0];
     }
+
+    const create = await customersApi.createCustomer({
+      emailAddress: email || undefined,
+      phoneNumber: phone || undefined
+    });
+    return create.result.customer;
+  } catch (e) {
+    throw new Error("Customer lookup failed: " + e.message);
+  }
+}
+
+// -------- BOOKINGS LOOKUP --------
+export async function lookupUpcomingBookingsByPhoneOrEmail({ phone, email, includePast }) {
+  try {
+    const searchReq = {
+      query: {
+        filter: {
+          customerIds: [],
+          locationId: process.env.SQUARE_DEFAULT_LOCATION_ID
+        }
+      }
+    };
+
+    // first resolve customer
+    const customer = await ensureCustomerByPhoneOrEmail({ phone, email });
+    if (!customer) return { bookings: [] };
+
+    searchReq.query.filter.customerIds.push(customer.id);
+
+    const res = await bookingsApi.searchBookings(searchReq);
+    let bookings = res?.result?.bookings || [];
+
+    if (!includePast) {
+      const now = new Date();
+      bookings = bookings.filter(b => new Date(b.startAt || b.start_at) >= now);
+    }
+
+    return { bookings };
+  } catch (e) {
+    throw new Error("Booking lookup failed: " + e.message);
+  }
+}
+
+// -------- BOOKING CREATE --------
+export async function createBooking({ customer, service, datetime }) {
+  try {
+    if (!customer?.id) throw new Error("Missing customer.id");
+    if (!datetime) throw new Error("Missing datetime");
+
+    // Find service variation ID by name
+    const catalog = await catalogApi.listCatalog(undefined, 'ITEM_VARIATION');
+    const variation = catalog.result.objects.find(o =>
+      o.itemVariationData?.name?.toLowerCase().includes(service.toLowerCase())
+    );
+    if (!variation) throw new Error("Service not found: " + service);
+
+    const req = {
+      booking: {
+        customerId: customer.id,
+        locationId: process.env.SQUARE_DEFAULT_LOCATION_ID,
+        startAt: new Date(datetime).toISOString(),
+        appointmentSegments: [
+          {
+            durationMinutes: 60,
+            serviceVariationId: variation.id,
+            teamMemberId: process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID
+          }
+        ]
+      }
+    };
+    const res = await bookingsApi.createBooking(req);
+    return res.result.booking;
+  } catch (e) {
+    throw new Error("Booking create failed: " + e.message);
+  }
+}
+
+// -------- BOOKING RESCHEDULE --------
+export async function rescheduleBooking(bookingId, newDateTime) {
+  try {
+    const res = await bookingsApi.updateBooking(bookingId, {
+      booking: { startAt: new Date(newDateTime).toISOString() }
+    });
+    return res.result.booking;
+  } catch (e) {
+    throw new Error("Reschedule failed: " + e.message);
+  }
+}
+
+// -------- BOOKING CANCEL --------
+export async function cancelBooking(bookingId) {
+  try {
+    await bookingsApi.cancelBooking(bookingId, {
+      bookingVersion: 1 // optimistic concurrency; update if needed
+    });
+    return true;
+  } catch (e) {
+    throw new Error("Cancel failed: " + e.message);
+  }
+}
+
+// -------- AVAILABILITY SEARCH --------
+export async function searchAvailability({ service, startAt, endAt }) {
+  try {
+    const res = await bookingsApi.searchAvailability({
+      query: {
+        filter: {
+          locationId: process.env.SQUARE_DEFAULT_LOCATION_ID,
+          segmentFilters: [
+            {
+              serviceVariationId: service,
+              teamMemberIdFilter: [process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID]
+            }
+          ]
+        },
+        startAt,
+        endAt
+      }
+    });
+    return res.result.availabilities || [];
+  } catch (e) {
+    throw new Error("Availability search failed: " + e.message);
+  }
+}
