@@ -1,105 +1,74 @@
-import Fastify from "fastify";
+// index.js
+import fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
-import { WebSocket } from "ws";
-import dotenv from "dotenv";
+import fastifyFormbody from "@fastify/formbody";   // 👈 needed for Twilio
+import twilio from "twilio";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { handleSquareFindBooking } from "./square.js";
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const app = Fastify({ logger: true });
+const app = fastify({ logger: true });
+
+// Register plugins
 app.register(fastifyWebsocket);
+app.register(fastifyFormbody);   // 👈 Twilio sends x-www-form-urlencoded
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-if (!OPENAI_API_KEY) {
-  throw new Error("Missing OPENAI_API_KEY in environment");
-}
+// Twilio client
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
-// --- Root route ---
-app.get("/", async (req, reply) => {
-  return { status: "ok", message: "Locsync voice agent server is live" };
-});
+// Load tenant data
+const tenantsPath = path.join(__dirname, "tenants.json");
+const tenants = JSON.parse(fs.readFileSync(tenantsPath, "utf-8"));
 
-// --- Incoming call webhook from Twilio ---
+// --- Incoming call webhook (Twilio calls this first) ---
 app.post("/incoming-call", async (req, reply) => {
-  const twiml = `
-    <Response>
-      <Say voice="alice">Hello, you are connected to the appointment assistant. Please ask your question after the beep.</Say>
-      <Connect>
-        <Stream url="wss://${req.hostname}/media-stream" />
-      </Connect>
-    </Response>
-  `;
-  reply.type("text/xml").send(twiml);
+  const twiml = new twilio.twiml.VoiceResponse();
+
+  // Twilio expects TwiML XML, not JSON
+  twiml.say("Thanks for calling the Loc Repair Clinic. Connecting you now.");
+  twiml.connect().stream({ url: `wss://${req.hostname}/media-stream` });
+
+  reply.type("text/xml").send(twiml.toString());
 });
 
-// --- Twilio Media Stream WebSocket ---
-app.get("/media-stream", { websocket: true }, (conn, req) => {
+// --- Media stream for real-time voice agent ---
+app.get("/media-stream", { websocket: true }, (connection /*, req */) => {
   console.log("📞 Twilio media stream connected");
 
-  // Create Realtime connection to OpenAI
-  const openaiWs = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01", {
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "OpenAI-Beta": "realtime=v1",
-    },
+  connection.socket.on("message", (msg) => {
+    // Handle raw media stream events from Twilio here
+    console.log("Media event:", msg.toString());
   });
 
-  openaiWs.on("open", () => {
-    console.log("✅ Connected to OpenAI Realtime API");
-  });
-
-  // --- Incoming Twilio audio -> send to OpenAI ---
-  conn.on("message", (msg) => {
-    try {
-      const data = JSON.parse(msg.toString());
-      if (data.event === "media") {
-        // forward base64 PCM16 audio to OpenAI
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: data.media.payload,
-        }));
-      } else if (data.event === "start") {
-        console.log("▶️ Call started");
-      } else if (data.event === "stop") {
-        console.log("⏹️ Call stopped");
-      }
-    } catch (err) {
-      console.error("⚠️ Error parsing Twilio message:", err);
-    }
-  });
-
-  // --- OpenAI -> Twilio (AI response audio) ---
-  openaiWs.on("message", (msg) => {
-    try {
-      const data = JSON.parse(msg.toString());
-      if (data.type === "output_audio_buffer.append") {
-        conn.send(JSON.stringify({
-          event: "media",
-          media: { payload: data.audio }, // base64 PCM16 back to Twilio
-        }));
-      } else if (data.type === "output_audio_buffer.commit") {
-        conn.send(JSON.stringify({ event: "mark", mark: { name: "response-end" } }));
-      }
-    } catch (err) {
-      console.error("⚠️ Error parsing OpenAI message:", err);
-    }
-  });
-
-  // Close cleanup
-  conn.on("close", () => {
-    console.log("❌ Twilio media stream closed");
-    openaiWs.close();
-  });
-
-  openaiWs.on("close", () => {
-    console.log("❌ OpenAI Realtime connection closed");
+  connection.socket.on("close", () => {
+    console.log("❌ Twilio media stream disconnected");
   });
 });
 
-// --- Start server ---
+// Example booking route that hits Square
+app.post("/find-booking", async (req, reply) => {
+  try {
+    const { phone } = req.body;
+    const booking = await handleSquareFindBooking(phone);
+    reply.send({ success: true, booking });
+  } catch (err) {
+    console.error("Error fetching booking:", err);
+    reply.status(500).send({ success: false, error: err.message });
+  }
+});
+
+// Start server
 const port = process.env.PORT || 10000;
 app.listen({ port, host: "0.0.0.0" }, (err, address) => {
   if (err) {
-    app.log.error(err);
+    console.error(err);
     process.exit(1);
   }
   console.log(`🚀 Server running on ${port}`);
