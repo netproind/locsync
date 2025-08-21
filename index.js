@@ -203,6 +203,78 @@ fastify.get('/dev/square/ping', async (_req, reply) => {
   }
 });
 
+// --- DEV: find bookings by phone/email/name (+ optional date) ---
+fastify.get('/dev/find', async (req, reply) => {
+  try {
+    const { phone, email, name, date } = req.query || {};
+    const { locationId, teamMemberId } = sqDefaults();
+
+    // split name → given/family
+    let givenName, familyName;
+    if (name) {
+      const parts = String(name).trim().split(/\s+/);
+      givenName = parts[0];
+      familyName = parts.slice(1).join(' ') || undefined;
+    }
+
+    // optional day window
+    let startAt, endAt;
+    if (date) ({ startAt, endAt } = dayWindowUTC(date));
+
+    // pull from Square (past + future), then narrow to window if provided
+    const res = await lookupUpcomingBookingsByPhoneOrEmail({
+      phone,
+      email,
+      givenName,
+      familyName,
+      locationId,
+      teamMemberId,
+      includePast: true
+    });
+
+    let list = res.bookings || [];
+    if (startAt || endAt) {
+      const s = startAt ? new Date(startAt).getTime() : -Infinity;
+      const e = endAt   ? new Date(endAt).getTime()   :  Infinity;
+      list = list.filter(b => {
+        const t = new Date(b.start_at || b.startAt).getTime();
+        return t >= s && t <= e;
+      });
+    }
+
+    // normalize a compact view
+    const tz = (Object.values(TENANTS)[0]?.timezone) || 'America/Detroit';
+    const items = list
+      .map(b => {
+        const start = b.start_at || b.startAt;
+        return {
+          id: b.id,
+          startAt: start,
+          spoken: speakTime(start, tz),
+          locationId: b.location_id || b.locationId,
+          customerId: b.customer_id || b.customerId,
+          status: b.status || 'BOOKED'
+        };
+      })
+      .sort((a, b) => new Date(a.startAt) - new Date(b.startAt));
+
+    reply.send({ ok: true, count: items.length, items });
+  } catch (e) {
+    reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// --- DEV: retrieve one booking by id ---
+fastify.get('/dev/booking/:id', async (req, reply) => {
+  try {
+    const b = await retrieveBooking(req.params.id);
+    if (!b) return reply.code(404).send({ ok: false, error: 'Not found' });
+    reply.send({ ok: true, booking: b });
+  } catch (e) {
+    reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Twilio webhook: start bidirectional media stream and pass tenant key
 fastify.all('/incoming-call', async (request, reply) => {
   const host = request.headers['host'];
