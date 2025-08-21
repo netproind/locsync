@@ -1,6 +1,4 @@
 // square.js — REST-only implementation (no SDK), Node 20 ESM
-// Works with either sandbox or production via SQUARE_ENV + SQUARE_ACCESS_TOKEN.
-
 import { randomUUID } from 'node:crypto';
 
 const envName = (process.env.SQUARE_ENV || 'sandbox').toLowerCase();
@@ -14,7 +12,6 @@ if (!TOKEN) {
   console.error('Missing SQUARE_ACCESS_TOKEN in environment.');
 }
 
-// Pick a recent, valid Square-Version
 const SQUARE_VERSION = '2025-05-15';
 
 // ------------------------ core fetch wrapper ------------------------
@@ -47,20 +44,13 @@ async function sqFetch(path, { method = 'GET', body } = {}) {
 function onlyDigits(s = '') {
   return String(s || '').replace(/\D+/g, '');
 }
-
 function toE164US(phone) {
   const trimmed = (phone || '').trim();
-  if (/^\+/.test(trimmed)) return trimmed;        // already E.164
+  if (/^\+/.test(trimmed)) return trimmed;
   const digits = onlyDigits(trimmed);
-  if (digits.length === 10) return `+1${digits}`;  // assume US numbers
+  if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
   return trimmed.startsWith('+') ? trimmed : `+${digits}`;
-}
-
-// ------------------------ Locations ------------------------
-export async function listLocations() {
-  const { locations = [] } = await sqFetch('/v2/locations', { method: 'GET' });
-  return locations;
 }
 
 // ------------------------ Customers ------------------------
@@ -126,7 +116,6 @@ export async function findCustomer({ phone, email, givenName, familyName }) {
     );
     if (exactEmail) return exactEmail;
   }
-
   if (phone) {
     const e164 = toE164US(phone);
     const exactPhone = customers.find(c => c.phone_number && c.phone_number === e164);
@@ -159,64 +148,8 @@ export async function resolveCustomerIds({ phone, email, givenName, familyName }
   }
 }
 
-// ------------------------ Catalog ------------------------
-export async function findServiceVariationIdByName({ serviceName }) {
-  const body = { text_filter: serviceName };
-  const { items = [] } = await sqFetch('/v2/catalog/search-catalog-items', { method: 'POST', body });
-  for (const item of items) {
-    const isSvc = item?.product_type === 'APPOINTMENTS_SERVICE' || item?.productType === 'APPOINTMENTS_SERVICE';
-    if (isSvc) {
-      const vars =
-        item?.item_data?.variations ||
-        item?.itemData?.variations ||
-        [];
-      if (vars[0]?.id) return vars[0].id;
-    }
-  }
-  return null;
-}
-
-async function getServiceVariationVersion(serviceVariationId) {
-  const { object } = await sqFetch(
-    `/v2/catalog/object/${encodeURIComponent(serviceVariationId)}?include_related_objects=false`,
-    { method: 'GET' }
-  );
-  return object?.version ?? null;
-}
-
-// ------------------------ Availability & Bookings ------------------------
-export async function searchAvailability({
-  locationId,
-  teamMemberId,
-  serviceVariationId,
-  startAt,
-  endAt
-}) {
-  const body = {
-    query: {
-      filter: {
-        location_id: locationId,
-        start_at_range: { start_at: startAt, end_at: endAt },
-        segment_filters: [
-          {
-            service_variation_id: serviceVariationId,
-            team_member_id_filter: { any: [teamMemberId] }
-          }
-        ]
-      }
-    }
-  };
-  const { availabilities = [] } = await sqFetch('/v2/bookings/availability/search', { method: 'POST', body });
-  return availabilities;
-}
-
-async function searchBookingsByCustomerIds({
-  customerIds,
-  locationId,
-  teamMemberId,
-  startAtMin,
-  startAtMax
-}) {
+// ------------------------ Bookings ------------------------
+async function searchBookingsByCustomerIds({ customerIds, locationId, teamMemberId, startAtMin, startAtMax }) {
   const all = [];
   for (const customerId of customerIds) {
     let cursor;
@@ -228,15 +161,7 @@ async function searchBookingsByCustomerIds({
       if (locationId) filter.location_id = locationId;
       if (teamMemberId) filter.team_member_id = teamMemberId;
 
-      const body = {
-        limit: 100,
-        cursor,
-        query: {
-          filter,
-          sort: { sort_field: 'START_AT', order: 'ASC' }
-        }
-      };
-
+      const body = { limit: 100, cursor, query: { filter, sort: { sort_field: 'START_AT', order: 'ASC' } } };
       const res = await sqFetch('/v2/bookings/search', { method: 'POST', body });
       all.push(...(res.bookings || []));
       cursor = res.cursor || null;
@@ -246,121 +171,24 @@ async function searchBookingsByCustomerIds({
 }
 
 export async function lookupUpcomingBookingsByPhoneOrEmail({
-  phone,
-  email,
-  givenName,
-  familyName,
-  locationId,
-  teamMemberId,
-  date,
-  includePast = false
+  phone, email, givenName, familyName, locationId, teamMemberId, includePast = false
 }) {
   const primary = await findCustomer({ phone, email, givenName, familyName });
   if (!primary) return { customer: null, bookings: [] };
 
   const now = new Date();
-  let startAtMin, startAtMax;
-  if (date) {
-    const [y, m, d] = date.split('-').map(Number);
-    startAtMin = new Date(Date.UTC(y, m - 1, d, 0, 0, 0)).toISOString();
-    startAtMax = new Date(Date.UTC(y, m - 1, d, 23, 59, 59)).toISOString();
-  } else {
-    const min = new Date(now);
-    if (includePast) min.setDate(min.getDate() - 31);
-    const max = new Date(min);
-    max.setDate(max.getDate() + 31);
-    startAtMin = min.toISOString();
-    startAtMax = max.toISOString();
-  }
+  const min = new Date(now);
+  if (includePast) min.setDate(min.getDate() - 31);
+  const max = new Date(min);
+  max.setDate(max.getDate() + 31);
+  const startAtMin = min.toISOString();
+  const startAtMax = max.toISOString();
 
   const bookings = await searchBookingsByCustomerIds({
-    customerIds: [primary.id],
-    locationId,
-    teamMemberId,
-    startAtMin,
-    startAtMax
+    customerIds: [primary.id], locationId, teamMemberId, startAtMin, startAtMax
   });
 
   return { customer: primary, bookings };
 }
 
-export async function createBooking({
-  locationId,
-  teamMemberId,
-  customerId,
-  serviceVariationId,
-  startAt,
-  sellerNote
-}) {
-  const serviceVariationVersion = await getServiceVariationVersion(serviceVariationId);
-  if (serviceVariationVersion == null) {
-    throw new Error('Could not resolve service_variation_version for the chosen service.');
-  }
-
-  const body = {
-    booking: {
-      location_id: locationId,
-      start_at: startAt,
-      customer_id: customerId,
-      appointment_segments: [
-        {
-          service_variation_id: serviceVariationId,
-          service_variation_version: serviceVariationVersion,
-          team_member_id: teamMemberId
-        }
-      ],
-      ...(sellerNote ? { seller_note: sellerNote } : {})
-    },
-    idempotency_key: randomUUID()
-  };
-
-  const { booking } = await sqFetch('/v2/bookings', { method: 'POST', body });
-  return booking || null;
-}
-
-export async function retrieveBooking(bookingId) {
-  if (!bookingId) throw new Error('retrieveBooking: bookingId is required');
-  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}`, { method: 'GET' });
-  return booking || null;
-}
-
-export async function cancelBooking({ bookingId, version }) {
-  const body = { version };
-  const { booking } = await sqFetch(`/v2/bookings/${encodeURIComponent(bookingId)}/cancel`, { method: 'POST', body });
-  return booking || null;
-}
-
-export async function rescheduleBooking({ bookingId, newStartAt }) {
-  if (!bookingId) throw new Error('rescheduleBooking: bookingId is required');
-  if (!newStartAt) throw new Error('rescheduleBooking: newStartAt (ISO) is required');
-
-  const current = await retrieveBooking(bookingId);
-  if (!current) throw new Error(`Booking not found: ${bookingId}`);
-
-  const booking = {
-    id: current.id,
-    version: current.version,
-    location_id: current.location_id || current.locationId,
-    customer_id: current.customer_id || current.customerId || undefined,
-    start_at: newStartAt,
-    appointment_segments: (current.appointment_segments || current.appointmentSegments || []).map(seg => ({
-      service_variation_id: seg.service_variation_id || seg.serviceVariationId,
-      service_variation_version: seg.service_variation_version || seg.serviceVariationVersion,
-      team_member_id: seg.team_member_id || seg.teamMemberId
-    }))
-  };
-
-  const body = {
-    idempotency_key: randomUUID(),
-    booking
-  };
-
-  const { booking: updated } = await sqFetch(
-    `/v2/bookings/${encodeURIComponent(bookingId)}`,
-    { method: 'PUT', body }
-  );
-  return updated || null;
-}
-
-// ✅ Export helpers so index.js can import
-export { toE164US, onlyDigits };
+export { toE164US };
