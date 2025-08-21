@@ -1,44 +1,31 @@
-// square.js
-
-// Import Square SDK correctly (CommonJS under the hood)
-import pkg from 'square';
-const { Client, Environment } = pkg;
-
-// Import phone number formatter
+import square from 'square';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 
-/**
- * Format phone numbers into E.164 (US standard).
- * Example: (555) 123-4567 → +15551234567
- */
-export function toE164US(phone) {
-  const parsed = parsePhoneNumberFromString(phone, 'US');
-  return parsed ? parsed.number : phone;
-}
+const { Client, Environment } = square;
 
-/**
- * Square client setup.
- * Access token and environment are pulled from environment variables.
- */
 export const squareClient = new Client({
-  environment: process.env.SQUARE_ENV === 'production'
-    ? Environment.Production
-    : Environment.Sandbox,  // defaults to sandbox unless explicitly production
   accessToken: process.env.SQUARE_ACCESS_TOKEN,
+  environment:
+    process.env.SQUARE_ENV === 'production'
+      ? Environment.Production
+      : Environment.Sandbox
 });
 
-/**
- * Example helper – find upcoming bookings for a customer.
- */
-export async function findUpcomingBookings(customerId) {
+export function toE164US(input) {
   try {
-    const { result } = await squareClient.bookingsApi.listBookings({
-      customerId,
-      limit: 5,
-    });
-    return result.bookings || [];
-  } catch (err) {
-    console.error('Error fetching bookings:', err);
-    return [];
+    const num = parsePhoneNumberFromString(input, 'US');
+    return num?.isValid() ? num.number : null;
+  } catch {
+    return null;
   }
+}
+
+// Example helpers (fill these in as you go)
+export async function listLocations() {
+  return squareClient.locationsApi.listLocations();
+}
+
+export async function lookupUpcomingBookingsByPhoneOrEmail({ phone, email }) {
+  // Placeholder until you flesh out Square booking search
+  return { bookings: [] };
 }
