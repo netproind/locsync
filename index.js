@@ -1,4 +1,4 @@
-// index.js — Twilio <-> OpenAI Realtime <-> Square
+// index.js — Fastify + Twilio Media Streams + OpenAI Realtime + Square
 // package.json must have: "type": "module"
 
 import Fastify from "fastify";
@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import fastifyFormBody from "@fastify/formbody";
 import fastifyWs from "@fastify/websocket";
 import fs from "node:fs/promises";
+import twilio from "twilio"; // ✅ for TwiML
 
 import {
   listLocations,
@@ -19,7 +20,7 @@ import {
   retrieveBooking,
   rescheduleBooking,
   cancelBooking,
-  toE164US
+  toE164US, // ✅ expose helper from square.js
 } from "./square.js";
 
 // ---------- ENV ----------
@@ -39,9 +40,10 @@ const DEFAULTS = {
   turn_detection: { type: "server_vad" },
   kb_per_file_char_cap: 10000,
   instructions_char_cap: 24000,
-  greeting_tts: null
+  greeting_tts: null,
 };
 
+// ---------- PORT ----------
 const PORT = process.env.PORT || 5050;
 
 // ---------- GLOBAL OVERRIDES ----------
@@ -54,7 +56,7 @@ try {
 }
 OVERRIDES = Array.isArray(OVERRIDES)
   ? OVERRIDES.filter(
-      o => o && typeof o.match === "string" && typeof o.reply === "string"
+      (o) => o && typeof o.match === "string" && typeof o.reply === "string"
     )
   : [];
 
@@ -95,7 +97,7 @@ async function fetchKbText(urls = []) {
 function sqDefaults() {
   return {
     locationId: process.env.SQUARE_DEFAULT_LOCATION_ID,
-    teamMemberId: process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID
+    teamMemberId: process.env.SQUARE_DEFAULT_TEAM_MEMBER_ID,
   };
 }
 
@@ -116,7 +118,7 @@ function speakTime(iso, tz = "America/Detroit") {
     month: "long",
     day: "numeric",
     hour: "numeric",
-    minute: "2-digit"
+    minute: "2-digit",
   }).format(dt);
 }
 
@@ -136,8 +138,7 @@ function buildInstructions(tenant, kbText = "") {
       .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
       .join("\n") || "(none)";
 
-  return (
-    `You are the voice receptionist for "${studio}".
+  return `You are the voice receptionist for "${studio}".
 Tone & style: ${style}. Keep answers under 20 seconds.
 
 BOOKING
@@ -165,8 +166,7 @@ CANONICAL Q&A:
 ${canonical}
 
 TENANT FAQ TEXT:
-${kbText || "(none)"}`
-  ).trim();
+${kbText || "(none)"}`;
 }
 
 // ---------- FASTIFY ----------
@@ -202,25 +202,25 @@ fastify.get("/dev/find", async (req, reply) => {
       familyName,
       locationId,
       teamMemberId,
-      includePast: true
+      includePast: true,
     });
 
     let list = res.bookings || [];
     if (startAt || endAt) {
       const s = startAt ? new Date(startAt).getTime() : -Infinity;
       const e = endAt ? new Date(endAt).getTime() : Infinity;
-      list = list.filter(b => {
+      list = list.filter((b) => {
         const t = new Date(b.start_at || b.startAt).getTime();
         return t >= s && t <= e;
       });
     }
 
     const tz = Object.values(TENANTS)[0]?.timezone || "America/Detroit";
-    const items = list.map(b => ({
+    const items = list.map((b) => ({
       id: b.id,
       startAt: b.start_at || b.startAt,
       spoken: speakTime(b.start_at || b.startAt, tz),
-      status: b.status || "BOOKED"
+      status: b.status || "BOOKED",
     }));
 
     reply.send({ ok: true, count: items.length, items });
@@ -229,43 +229,21 @@ fastify.get("/dev/find", async (req, reply) => {
   }
 });
 
-// ---------- TWILIO INTEGRATION ----------
-
-// Twilio webhook for incoming calls
+// ---------- Twilio incoming call route ----------
 fastify.post("/incoming-call", async (req, reply) => {
-  const host = req.headers.host;
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-    <Response>
-      <Say voice="alice">Connecting you now.</Say>
-      <Connect>
-        <Stream url="wss://${host}/media-stream"/>
-      </Connect>
-    </Response>`;
-
-  reply.header("Content-Type", "text/xml").send(twiml);
-});
-
-// Twilio Media Stream WebSocket
-fastify.register(async function (fastify) {
-  fastify.get("/media-stream", { websocket: true }, (connection, req) => {
-    console.log("✅ Twilio WS connected");
-
-    connection.socket.on("message", msg => {
-      console.log("Got audio chunk from Twilio", msg.length);
-      // TODO: forward audio to OpenAI Realtime
-    });
-
-    connection.socket.on("close", () => {
-      console.log("❌ Twilio WS closed");
-    });
+  const twiml = new twilio.twiml.VoiceResponse();
+  twiml.say("Thanks for calling, connecting you now.");
+  twiml.connect().stream({
+    url: `wss://${req.headers.host}/ws`, // ✅ your WebSocket endpoint
   });
+  reply.type("text/xml").send(twiml.toString());
 });
 
 // ---------- START ----------
-fastify.listen({ port: PORT, host: "0.0.0.0" }, err => {
+fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
     fastify.log.error(err);
     process.exit(1);
   }
-  console.log(`🚀 Server running on port ${PORT}`);
+  fastify.log.info(`Server is listening on ${address}`);
 });
