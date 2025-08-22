@@ -1,26 +1,30 @@
-import axios from "axios";
+import fetch from "node-fetch";
 
-const { ACUITY_API_KEY } = process.env;
+const { ACUITY_USER_ID, ACUITY_API_KEY } = process.env;
 const ACUITY_BASE_URL = "https://acuityscheduling.com/api/v1";
 
-// Handle a booking or lookup in Acuity
 export async function handleAcuityBooking(speechResult) {
   try {
-    // Example: fetch list of appointment types
-    const res = await axios.get(`${ACUITY_BASE_URL}/appointment-types`, {
-      auth: {
-        username: ACUITY_API_KEY, // Acuity requires API key as username
-        password: "X"             // Password must literally be "X"
-      }
+    // Build correct Basic Auth header
+    const authString = Buffer.from(`${ACUITY_USER_ID}:${ACUITY_API_KEY}`).toString("base64");
+
+    const res = await fetch(`${ACUITY_BASE_URL}/appointment-types`, {
+      headers: {
+        Authorization: `Basic ${authString}`,
+      },
     });
 
-    const types = res.data || [];
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Acuity API error ${res.status}: ${errorText}`);
+    }
+
+    const types = await res.json();
     console.log("📅 Available appointment types:", types);
 
-    // Just confirm we heard the caller for now
     return `You said: ${speechResult}. I found ${types.length} appointment types in Acuity.`;
   } catch (err) {
-    console.error("❌ Acuity error:", err.response?.data || err.message);
+    console.error("❌ Acuity error:", err);
     return "Sorry, I had trouble connecting to the booking system.";
   }
 }
