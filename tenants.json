@@ -1,20 +1,25 @@
 {
-  "+13134555627": {
+  "yesha_locsync_v1": {
     "tenant_id": "yesha_locsync_v1",
+    "phone_number": "+13134555627",
     "studio_name": "The Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
-    "hours": { "open_days": [0, 1, 2, 3, 4, 5], "open_hour": 11, "close_hour": 19 },
+    "hours": { 
+      "open_days": [0, 1, 2, 3, 4, 5],
+      "open_hour": 11,
+      "close_hour": 19
+    },
 
     "voice_provider": "openai",
     "voice": "alloy",
     "voice_style": "warm, Detroit-local, confident; clear enunciation; natural code-switching when caller uses AAVE; friendly but efficient",
 
-    "model": "gpt-4o-realtime-preview-2024-10-01",
+    "model": "gpt-4o-mini",
     "temperature": 0.7,
     "modalities": ["text", "audio"],
     "turn_detection": { "type": "server_vad" },
 
-    "greeting_tts": "Thanks for calling the Loc Repair Clinic. Connecting you to speak now.",
+    "greeting_tts": "Thanks for calling the Loc Repair Clinic. Connecting you now.",
 
     "kb_per_file_char_cap": 10000,
     "instructions_char_cap": 24000,
@@ -22,20 +27,35 @@
     "booking_url": "https://www.locrepair.com/service_portal",
     "services": ["Retwists", "Crochet Repair", "Interlock Maintenance", "Bald Coverage"],
     "pricing_notes": ["Interlock starts at $95 for 2–3 turns, $135 for 4–6 turns"],
-    "policies": ["24h reschedule", "Deposits non-refundable after certain times. See terms at locrepair.com/terms"],
+    "policies": [
+      "24h reschedule policy",
+      "Deposits non-refundable after certain times. See terms at locrepair.com/terms"
+    ],
 
     "faq_urls": [
       "https://raw.githubusercontent.com/you/yourrepo/main/knowledge/yesha-faqs.md"
     ],
 
     "canonical_answers": [
-      { "q": "How can I get an appointment?", "a": "Since we serve by appointment only. You can start immediately at the service portal at locrepair.com." },
-      { "q": "How much is interlock maintenance?", "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit is required and a quote can be started right now at locrepair.com. Make sure you visit the Service Portal to begin immediately." },
-      { "q": "How can I get bald coverage?", "a": "If you live in the Metro Detroit area, you are eligible for a consultation.  Please text COVERAGE to 313-488-4898 now to get started." }
+      {
+        "q": "How can I get an appointment?",
+        "a": "We serve by appointment only. You can start immediately at the service portal: locrepair.com/service_portal."
+      },
+      {
+        "q": "How much is interlock maintenance?",
+        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. You can start right now at locrepair.com/service_portal."
+      },
+      {
+        "q": "How can I get bald coverage?",
+        "a": "If you live in the Metro Detroit area, you are eligible for a consultation. Please text COVERAGE to 313-488-4898 now to get started."
+      }
     ],
 
     "overrides": [
-  { "match": "\\bwalk[- ]?in(s)?\\b", "reply": "We’re appointment-only. You can book online right now at locrepair.com/service_portal. Let me read that link for you: locrepair dot com slash service underscore portal." }
+      {
+        "match": "\\bwalk[- ]?in(s)?\\b",
+        "reply": "We’re appointment-only. You can book online right now at locrepair.com/service_portal."
+      }
     ]
   }
 }
