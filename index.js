@@ -1,12 +1,14 @@
 import Fastify from "fastify";
+import formbody from "@fastify/formbody";
 import twilio from "twilio";
 import fs from "fs";
 import OpenAI from "openai";
 import { handleAcuityBooking } from "./acuity.js";
 
 const fastify = Fastify({ logger: true });
+await fastify.register(formbody); // 👈 this is required for Twilio POSTs
 
-// Environment variables (set these in Render dashboard)
+// Environment variables
 const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
@@ -25,7 +27,7 @@ if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !ACUITY
 const twiml = twilio.twiml.VoiceResponse;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// Load knowledge.md into memory at startup
+// Load knowledge.md into memory
 let knowledgeBase = "";
 try {
   knowledgeBase = fs.readFileSync("./knowledge.md", "utf8");
@@ -39,7 +41,7 @@ fastify.get("/", async () => {
   return { status: "ok", service: "LocSync Voice Agent with Acuity + Knowledge" };
 });
 
-// Twilio webhook: incoming call
+// Incoming call
 fastify.post("/incoming-call", async (req, reply) => {
   const response = new twiml();
 
@@ -54,7 +56,7 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Handle speech from caller
+// Handle speech
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult;
   const response = new twiml();
@@ -62,13 +64,13 @@ fastify.post("/handle-speech", async (req, reply) => {
   if (speechResult) {
     console.log("🎤 Caller said:", speechResult);
 
-    // Try booking first
+    // Try Acuity first
     const bookingMsg = await handleAcuityBooking(speechResult);
 
-    if (bookingMsg && !bookingMsg.includes("I didn’t understand")) {
+    if (bookingMsg && !bookingMsg.includes("trouble")) {
       response.say(bookingMsg);
     } else {
-      // Fallback: ask OpenAI to answer from knowledge.md
+      // Fallback to OpenAI knowledge
       try {
         const ai = await openai.chat.completions.create({
           model: "gpt-4o-mini",
