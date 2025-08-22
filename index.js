@@ -1,118 +1,68 @@
 import Fastify from "fastify";
-import formBody from "@fastify/formbody";
-import websocket from "@fastify/websocket";
-import fs from "fs";
 import twilio from "twilio";
-
-import { getAppointments, createAppointment, cancelAppointment } from "./acuity.js";
+import { handleAcuityBooking } from "./acuity.js";
 
 const fastify = Fastify({ logger: true });
-await fastify.register(formBody);
-await fastify.register(websocket);
 
-const VoiceResponse = twilio.twiml.VoiceResponse;
-const PORT = process.env.PORT || 10000;
+// Environment variables (set these in Render dashboard)
+const {
+  TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN,
+  TWILIO_PHONE_NUMBER,
+  ACUITY_API_KEY,
+  RENDER_EXTERNAL_HOSTNAME,
+  PORT = 10000,
+} = process.env;
 
-// Load knowledge.md into memory
-const knowledge = fs.readFileSync("./knowledge.md", "utf-8");
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !ACUITY_API_KEY) {
+  console.error("❌ Missing required environment variables");
+  process.exit(1);
+}
 
-// Health check
+const twiml = twilio.twiml.VoiceResponse;
+
+// Root endpoint
 fastify.get("/", async () => {
-  return { status: "ok" };
+  return { status: "ok", service: "LocSync Voice Agent with Acuity" };
 });
 
 // Twilio webhook: incoming call
 fastify.post("/incoming-call", async (req, reply) => {
-  const twiml = new VoiceResponse();
+  const response = new twiml();
 
-  twiml.say("Thank you for calling the Loc Repair Clinic.");
-  const gather = twiml.gather({
+  response.say("Thank you for calling Loc Repair Clinic. Please say what service you would like to book.");
+  response.gather({
     input: "speech",
-    action: "/process-speech",
+    action: "/handle-speech",
     method: "POST",
-    timeout: 5
+    timeout: 5,
   });
-  gather.say("You can ask a question about our services or say schedule to manage an appointment.");
 
-  reply.type("text/xml").send(twiml.toString());
+  reply.type("text/xml").send(response.toString());
 });
 
-// Process speech input
-fastify.post("/process-speech", async (req, reply) => {
-  const speechResult = req.body.SpeechResult?.toLowerCase() || "";
-  const twiml = new VoiceResponse();
+// Handle speech from caller
+fastify.post("/handle-speech", async (req, reply) => {
+  const speechResult = req.body?.SpeechResult;
+  const response = new twiml();
 
-  if (speechResult.includes("schedule")) {
-    const gather = twiml.gather({
-      input: "speech",
-      action: "/process-schedule",
-      method: "POST",
-      timeout: 5
-    });
-    gather.say("Would you like to check, create, or cancel an appointment?");
+  if (speechResult) {
+    console.log("🎤 Caller said:", speechResult);
+    const bookingMsg = await handleAcuityBooking(speechResult);
+    response.say(bookingMsg);
   } else {
-    // Simple knowledge lookup
-    const found = knowledge.toLowerCase().includes(speechResult);
-    const answer = found
-      ? "Here is what I found in my knowledge base about that."
-      : "Sorry, I could not find that in my knowledge base.";
-
-    twiml.say(answer);
-    twiml.hangup();
+    response.say("I didn’t catch that. Please try again later.");
   }
 
-  reply.type("text/xml").send(twiml.toString());
-});
-
-// Process schedule request
-fastify.post("/process-schedule", async (req, reply) => {
-  const speechResult = req.body.SpeechResult?.toLowerCase() || "";
-  const twiml = new VoiceResponse();
-
-  if (speechResult.includes("check")) {
-    const appts = await getAppointments();
-    if (appts && appts.length > 0) {
-      twiml.say(`You have ${appts.length} appointments scheduled.`);
-    } else {
-      twiml.say("I could not find any appointments scheduled.");
-    }
-  } else if (speechResult.includes("create")) {
-    // Placeholder — later we’ll expand with real input
-    const appt = await createAppointment({
-      datetime: new Date().toISOString(),
-      name: "Caller",
-      email: "caller@example.com"
-    });
-    twiml.say("Your appointment has been created.");
-  } else if (speechResult.includes("cancel")) {
-    // Placeholder — later expand with real input
-    await cancelAppointment("12345");
-    twiml.say("Your appointment has been canceled.");
-  } else {
-    twiml.say("Sorry, I didn’t understand. Please say check, create, or cancel.");
-    twiml.redirect("/incoming-call");
-  }
-
-  twiml.hangup();
-  reply.type("text/xml").send(twiml.toString());
-});
-
-// WebSocket for media stream (optional debugging)
-fastify.get("/media-stream", { websocket: true }, (conn) => {
-  console.log("📞 Twilio media stream connected");
-  conn.socket.on("message", (msg) => {
-    console.log("Received audio chunk:", msg.toString().length);
-  });
-  conn.socket.on("close", () => {
-    console.log("🔌 Twilio stream closed");
-  });
+  response.hangup();
+  reply.type("text/xml").send(response.toString());
 });
 
 // Start server
-fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
+fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
     fastify.log.error(err);
     process.exit(1);
   }
-  console.log(`🚀 Server running on ${PORT}`);
+  console.log(`🚀 Server running on ${address}`);
 });
