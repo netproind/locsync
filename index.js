@@ -2,7 +2,6 @@ import Fastify from "fastify";
 import formBody from "@fastify/formbody";
 import websocket from "@fastify/websocket";
 import fs from "fs";
-import { marked } from "marked";
 import twilio from "twilio";
 
 import { getAppointments, createAppointment, cancelAppointment } from "./acuity.js";
@@ -16,7 +15,6 @@ const PORT = process.env.PORT || 10000;
 
 // Load knowledge.md into memory
 const knowledge = fs.readFileSync("./knowledge.md", "utf-8");
-const knowledgeText = marked.parse(knowledge);
 
 // Health check
 fastify.get("/", async () => {
@@ -45,12 +43,18 @@ fastify.post("/process-speech", async (req, reply) => {
   const twiml = new VoiceResponse();
 
   if (speechResult.includes("schedule")) {
-    twiml.say("Okay, would you like to create, cancel, or check an appointment?");
-    twiml.redirect("/incoming-call"); // loop back for now
+    const gather = twiml.gather({
+      input: "speech",
+      action: "/process-schedule",
+      method: "POST",
+      timeout: 5
+    });
+    gather.say("Would you like to check, create, or cancel an appointment?");
   } else {
     // Simple knowledge lookup
-    const answer = knowledgeText.includes(speechResult)
-      ? "Here is what I found: " + speechResult
+    const found = knowledge.toLowerCase().includes(speechResult);
+    const answer = found
+      ? "Here is what I found in my knowledge base about that."
       : "Sorry, I could not find that in my knowledge base.";
 
     twiml.say(answer);
@@ -60,7 +64,40 @@ fastify.post("/process-speech", async (req, reply) => {
   reply.type("text/xml").send(twiml.toString());
 });
 
-// WebSocket for media stream (not strictly required with Gather)
+// Process schedule request
+fastify.post("/process-schedule", async (req, reply) => {
+  const speechResult = req.body.SpeechResult?.toLowerCase() || "";
+  const twiml = new VoiceResponse();
+
+  if (speechResult.includes("check")) {
+    const appts = await getAppointments();
+    if (appts && appts.length > 0) {
+      twiml.say(`You have ${appts.length} appointments scheduled.`);
+    } else {
+      twiml.say("I could not find any appointments scheduled.");
+    }
+  } else if (speechResult.includes("create")) {
+    // Placeholder — later we’ll expand with real input
+    const appt = await createAppointment({
+      datetime: new Date().toISOString(),
+      name: "Caller",
+      email: "caller@example.com"
+    });
+    twiml.say("Your appointment has been created.");
+  } else if (speechResult.includes("cancel")) {
+    // Placeholder — later expand with real input
+    await cancelAppointment("12345");
+    twiml.say("Your appointment has been canceled.");
+  } else {
+    twiml.say("Sorry, I didn’t understand. Please say check, create, or cancel.");
+    twiml.redirect("/incoming-call");
+  }
+
+  twiml.hangup();
+  reply.type("text/xml").send(twiml.toString());
+});
+
+// WebSocket for media stream (optional debugging)
 fastify.get("/media-stream", { websocket: true }, (conn) => {
   console.log("📞 Twilio media stream connected");
   conn.socket.on("message", (msg) => {
@@ -69,29 +106,6 @@ fastify.get("/media-stream", { websocket: true }, (conn) => {
   conn.socket.on("close", () => {
     console.log("🔌 Twilio stream closed");
   });
-});
-
-// Acuity routes
-fastify.get("/acuity/find", async () => {
-  return await getAppointments();
-});
-
-fastify.post("/acuity/create", async (req) => {
-  return await createAppointment(req.body);
-});
-
-fastify.post("/acuity/cancel", async (req) => {
-  const { appointmentId } = req.body;
-  return await cancelAppointment(appointmentId);
-});
-
-// Knowledge Q&A endpoint (for testing via REST)
-fastify.post("/ask", async (req) => {
-  const { question } = req.body;
-  const answer = knowledgeText.includes(question)
-    ? "Yes, I found something relevant: " + question
-    : "Sorry, I couldn't find that in my knowledge base.";
-  return { answer };
 });
 
 // Start server
