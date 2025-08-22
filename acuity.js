@@ -1,34 +1,30 @@
 import fetch from "node-fetch";
 
-const ACUITY_API_KEY = process.env.ACUITY_API_KEY;
+const { ACUITY_API_KEY } = process.env;
 const ACUITY_BASE_URL = "https://acuityscheduling.com/api/v1";
 
-// 🔹 List appointments
-export async function getAppointments() {
-  const res = await fetch(`${ACUITY_BASE_URL}/appointments`, {
-    headers: { Authorization: `Bearer ${ACUITY_API_KEY}` }
-  });
-  return res.json();
-}
+// Dummy booking handler for now
+// Later you can map `speechResult` to a real service
+export async function handleAcuityBooking(speechResult) {
+  try {
+    // Example: just fetch the list of appointment types
+    const res = await fetch(`${ACUITY_BASE_URL}/appointment-types`, {
+      headers: {
+        Authorization: `Bearer ${ACUITY_API_KEY}`,
+      },
+    });
 
-// 🔹 Create appointment
-export async function createAppointment(data) {
-  const res = await fetch(`${ACUITY_BASE_URL}/appointments`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${ACUITY_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(data)
-  });
-  return res.json();
-}
+    if (!res.ok) {
+      throw new Error(`Acuity API error: ${res.status}`);
+    }
 
-// 🔹 Cancel appointment
-export async function cancelAppointment(id) {
-  const res = await fetch(`${ACUITY_BASE_URL}/appointments/${id}/cancel`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${ACUITY_API_KEY}` }
-  });
-  return res.json();
+    const types = await res.json();
+    console.log("📅 Available appointment types:", types);
+
+    // For now, just confirm we heard the caller
+    return `You said: ${speechResult}. I found ${types.length} appointment types in Acuity.`;
+  } catch (err) {
+    console.error("❌ Acuity error:", err);
+    return "Sorry, I had trouble connecting to the booking system.";
+  }
 }
