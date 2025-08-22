@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import formbody from "@fastify/formbody";   // ✅ parse Twilio POST form data
+import formbody from "@fastify/formbody";
 import twilio from "twilio";
 import fs from "fs";
 import OpenAI from "openai";
@@ -7,7 +7,7 @@ import { handleAcuityBooking } from "./acuity.js";
 
 const fastify = Fastify({ logger: true });
 
-// ✅ Register formbody so Twilio's application/x-www-form-urlencoded works
+// Register parser so Twilio webhooks (x-www-form-urlencoded) are accepted
 await fastify.register(formbody);
 
 // Environment variables (set these in Render dashboard)
@@ -15,6 +15,7 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
+  ACUITY_USER_ID,
   ACUITY_API_KEY,
   OPENAI_API_KEY,
   RENDER_EXTERNAL_HOSTNAME,
@@ -25,6 +26,7 @@ if (
   !TWILIO_ACCOUNT_SID ||
   !TWILIO_AUTH_TOKEN ||
   !TWILIO_PHONE_NUMBER ||
+  !ACUITY_USER_ID ||
   !ACUITY_API_KEY ||
   !OPENAI_API_KEY
 ) {
@@ -34,15 +36,6 @@ if (
 
 const twiml = twilio.twiml.VoiceResponse;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-
-// Load tenants.json
-let tenants = {};
-try {
-  tenants = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
-  console.log(`📖 Loaded tenants.json with ${Object.keys(tenants).length} tenants`);
-} catch (err) {
-  console.warn("⚠️ No tenants.json found, continuing without it.");
-}
 
 // Load knowledge.md into memory at startup
 let knowledgeBase = "";
@@ -78,14 +71,10 @@ fastify.post("/incoming-call", async (req, reply) => {
 // Handle speech from caller
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult;
-  const callerNumber = req.body?.From;
   const response = new twiml();
 
   if (speechResult) {
     console.log("🎤 Caller said:", speechResult);
-
-    // Lookup tenant by caller phone
-    const tenant = tenants[callerNumber] || null;
 
     // Try booking first
     const bookingMsg = await handleAcuityBooking(speechResult);
@@ -93,18 +82,14 @@ fastify.post("/handle-speech", async (req, reply) => {
     if (bookingMsg && !bookingMsg.includes("I didn’t understand")) {
       response.say(bookingMsg);
     } else {
-      // Fallback: ask OpenAI to answer from knowledge.md + tenant config
+      // Fallback: ask OpenAI to answer from knowledge.md
       try {
-        const kbContent = tenant
-          ? `${knowledgeBase}\n\nTenant Info:\n${JSON.stringify(tenant, null, 2)}`
-          : knowledgeBase;
-
         const ai = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
             {
               role: "system",
-              content: `You are a helpful assistant for LocSync voice agent. Use the following knowledge base to answer questions:\n\n${kbContent}`,
+              content: `You are a helpful assistant for Loc Repair Clinic. Use the following knowledge base to answer questions:\n\n${knowledgeBase}`,
             },
             { role: "user", content: speechResult },
           ],
