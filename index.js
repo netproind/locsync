@@ -14,7 +14,7 @@ await fastify.register(websocket);
 const VoiceResponse = twilio.twiml.VoiceResponse;
 const PORT = process.env.PORT || 10000;
 
-// Load knowledge.md
+// Load knowledge.md into memory
 const knowledge = fs.readFileSync("./knowledge.md", "utf-8");
 const knowledgeText = marked.parse(knowledge);
 
@@ -26,15 +26,41 @@ fastify.get("/", async () => {
 // Twilio webhook: incoming call
 fastify.post("/incoming-call", async (req, reply) => {
   const twiml = new VoiceResponse();
-  twiml.say("Thank you for calling Loc Repair Clinic, connecting you now.");
-  twiml.connect().stream({
-    url: `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/media-stream`,
+
+  twiml.say("Thank you for calling the Loc Repair Clinic.");
+  const gather = twiml.gather({
+    input: "speech",
+    action: "/process-speech",
+    method: "POST",
+    timeout: 5
   });
+  gather.say("You can ask a question about our services or say schedule to manage an appointment.");
 
   reply.type("text/xml").send(twiml.toString());
 });
 
-// WebSocket for media stream
+// Process speech input
+fastify.post("/process-speech", async (req, reply) => {
+  const speechResult = req.body.SpeechResult?.toLowerCase() || "";
+  const twiml = new VoiceResponse();
+
+  if (speechResult.includes("schedule")) {
+    twiml.say("Okay, would you like to create, cancel, or check an appointment?");
+    twiml.redirect("/incoming-call"); // loop back for now
+  } else {
+    // Simple knowledge lookup
+    const answer = knowledgeText.includes(speechResult)
+      ? "Here is what I found: " + speechResult
+      : "Sorry, I could not find that in my knowledge base.";
+
+    twiml.say(answer);
+    twiml.hangup();
+  }
+
+  reply.type("text/xml").send(twiml.toString());
+});
+
+// WebSocket for media stream (not strictly required with Gather)
 fastify.get("/media-stream", { websocket: true }, (conn) => {
   console.log("📞 Twilio media stream connected");
   conn.socket.on("message", (msg) => {
@@ -59,10 +85,9 @@ fastify.post("/acuity/cancel", async (req) => {
   return await cancelAppointment(appointmentId);
 });
 
-// Knowledge Q&A endpoint
+// Knowledge Q&A endpoint (for testing via REST)
 fastify.post("/ask", async (req) => {
   const { question } = req.body;
-  // Simple search in knowledge text
   const answer = knowledgeText.includes(question)
     ? "Yes, I found something relevant: " + question
     : "Sorry, I couldn't find that in my knowledge base.";
