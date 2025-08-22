@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 const { ACUITY_USER_ID, ACUITY_API_KEY } = process.env;
 const ACUITY_BASE_URL = "https://acuityscheduling.com/api/v1";
 
