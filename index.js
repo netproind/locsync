@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import formbody from "@fastify/formbody";   // ✅ parse Twilio POST form data
 import twilio from "twilio";
 import fs from "fs";
 import OpenAI from "openai";
@@ -6,27 +7,27 @@ import { handleAcuityBooking } from "./acuity.js";
 
 const fastify = Fastify({ logger: true });
 
-// Load tenants
-let tenants = {};
-try {
-  tenants = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
-  console.log("📖 Loaded tenants.json with", Object.keys(tenants).length, "tenants");
-} catch (err) {
-  console.error("❌ Failed to load tenants.json:", err);
-  process.exit(1);
-}
+// ✅ Register formbody so Twilio's application/x-www-form-urlencoded works
+await fastify.register(formbody);
 
-// Env vars
+// Environment variables (set these in Render dashboard)
 const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
   ACUITY_API_KEY,
   OPENAI_API_KEY,
+  RENDER_EXTERNAL_HOSTNAME,
   PORT = 10000,
 } = process.env;
 
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !ACUITY_API_KEY || !OPENAI_API_KEY) {
+if (
+  !TWILIO_ACCOUNT_SID ||
+  !TWILIO_AUTH_TOKEN ||
+  !TWILIO_PHONE_NUMBER ||
+  !ACUITY_API_KEY ||
+  !OPENAI_API_KEY
+) {
   console.error("❌ Missing required environment variables");
   process.exit(1);
 }
@@ -34,38 +35,36 @@ if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !ACUITY
 const twiml = twilio.twiml.VoiceResponse;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// Load knowledge.md
+// Load tenants.json
+let tenants = {};
+try {
+  tenants = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
+  console.log(`📖 Loaded tenants.json with ${Object.keys(tenants).length} tenants`);
+} catch (err) {
+  console.warn("⚠️ No tenants.json found, continuing without it.");
+}
+
+// Load knowledge.md into memory at startup
 let knowledgeBase = "";
 try {
   knowledgeBase = fs.readFileSync("./knowledge.md", "utf8");
   console.log("📖 Loaded knowledge.md into memory");
-} catch {
+} catch (err) {
   console.warn("⚠️ No knowledge.md found, continuing without it.");
-}
-
-// Helper: find tenant by phone
-function getTenantByPhone(phone) {
-  return Object.values(tenants).find(t => t.phone_number === phone);
 }
 
 // Root endpoint
 fastify.get("/", async () => {
-  return { status: "ok", service: "LocSYNC Voice Agent" };
+  return { status: "ok", service: "LocSync Voice Agent with Acuity + Knowledge" };
 });
 
-// Incoming call
+// Twilio webhook: incoming call
 fastify.post("/incoming-call", async (req, reply) => {
-  const toNumber = req.body?.To;
-  const tenant = getTenantByPhone(toNumber);
-
   const response = new twiml();
-  if (!tenant) {
-    response.say("Sorry, this number is not configured for LocSYNC.");
-    response.hangup();
-    return reply.type("text/xml").send(response.toString());
-  }
 
-  response.say(tenant.greeting_tts || "Thanks for calling. Please say what service you would like.");
+  response.say(
+    "Thank you for calling Loc Repair Clinic. Please say what service you would like to book or ask me a question."
+  );
   response.gather({
     input: "speech",
     action: "/handle-speech",
@@ -76,74 +75,47 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Handle speech
+// Handle speech from caller
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult;
-  const toNumber = req.body?.To;
-  const tenant = getTenantByPhone(toNumber);
-
+  const callerNumber = req.body?.From;
   const response = new twiml();
 
-  if (!tenant) {
-    response.say("This number is not configured.");
-    response.hangup();
-    return reply.type("text/xml").send(response.toString());
-  }
-
   if (speechResult) {
-    console.log(`🎤 [${tenant.tenant_id}] Caller said:`, speechResult);
+    console.log("🎤 Caller said:", speechResult);
 
-    // Check overrides first
-    if (tenant.overrides) {
-      for (const rule of tenant.overrides) {
-        const regex = new RegExp(rule.match, "i");
-        if (regex.test(speechResult)) {
-          response.say(rule.reply);
-          response.hangup();
-          return reply.type("text/xml").send(response.toString());
-        }
-      }
-    }
+    // Lookup tenant by caller phone
+    const tenant = tenants[callerNumber] || null;
 
-    // Check canonical answers
-    if (tenant.canonical_answers) {
-      for (const qa of tenant.canonical_answers) {
-        const regex = new RegExp(qa.q, "i");
-        if (regex.test(speechResult)) {
-          response.say(qa.a);
-          response.hangup();
-          return reply.type("text/xml").send(response.toString());
-        }
-      }
-    }
-
-    // Try Acuity booking
+    // Try booking first
     const bookingMsg = await handleAcuityBooking(speechResult);
-    if (bookingMsg && !bookingMsg.includes("trouble")) {
+
+    if (bookingMsg && !bookingMsg.includes("I didn’t understand")) {
       response.say(bookingMsg);
-      response.hangup();
-      return reply.type("text/xml").send(response.toString());
-    }
+    } else {
+      // Fallback: ask OpenAI to answer from knowledge.md + tenant config
+      try {
+        const kbContent = tenant
+          ? `${knowledgeBase}\n\nTenant Info:\n${JSON.stringify(tenant, null, 2)}`
+          : knowledgeBase;
 
-    // Fallback: OpenAI knowledge
-    try {
-      const ai = await openai.chat.completions.create({
-        model: tenant.model || "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are a helpful assistant for ${tenant.studio_name}. Use the following knowledge base and FAQs to answer questions:\n\n${knowledgeBase}`,
-          },
-          { role: "user", content: speechResult },
-        ],
-        temperature: tenant.temperature ?? 0.7,
-      });
+        const ai = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `You are a helpful assistant for LocSync voice agent. Use the following knowledge base to answer questions:\n\n${kbContent}`,
+            },
+            { role: "user", content: speechResult },
+          ],
+        });
 
-      const answer = ai.choices[0].message.content;
-      response.say(answer || "I'm sorry, I couldn’t find the answer.");
-    } catch (err) {
-      console.error("❌ OpenAI error:", err);
-      response.say("I had trouble accessing my knowledge base. Please try again later.");
+        const answer = ai.choices[0].message.content;
+        response.say(answer || "I'm sorry, I couldn’t find the answer.");
+      } catch (err) {
+        console.error("❌ OpenAI error:", err);
+        response.say("I had trouble accessing my knowledge base. Please try again later.");
+      }
     }
   } else {
     response.say("I didn’t catch that. Please try again later.");
