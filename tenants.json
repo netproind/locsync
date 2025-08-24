@@ -19,7 +19,7 @@
     "modalities": ["text", "audio"],
     "turn_detection": { "type": "server_vad" },
 
-    "greeting_tts": "Thanks for calling the Loc Repair Clinic. Connecting you now.",
+    "greeting_tts": "Thanks for calling the Loc Repair Clinic. Connecting..how can I help you?",
 
     "kb_per_file_char_cap": 10000,
     "instructions_char_cap": 24000,
@@ -33,7 +33,7 @@
     ],
 
     "faq_urls": [
-      "https://raw.githubusercontent.com/you/yourrepo/main/knowledge/yesha-faqs.md"
+      "https://raw.githubusercontent.com/you/locsync/main/knowledge.md"
     ],
 
     "canonical_answers": [
@@ -43,7 +43,7 @@
       },
       {
         "q": "How much is interlock maintenance?",
-        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. You can start right now at locrepair.com/service_portal."
+        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. You can start right now for quote first at locrepair.com/service_portal."
       },
       {
         "q": "How can I get bald coverage?",
@@ -54,7 +54,7 @@
     "overrides": [
       {
         "match": "\\bwalk[- ]?in(s)?\\b",
-        "reply": "We’re appointment-only. You can book online right now at locrepair.com/service_portal."
+        "reply": "We’re appointment-only. You can book online right now for future slots as early as tomorrow at locrepair.com/service_portal."
       }
     ]
   }
