@@ -6,8 +6,6 @@ import OpenAI from "openai";
 import { handleAcuityBooking } from "./acuity.js";
 
 const fastify = Fastify({ logger: true });
-
-// Accept Twilio webhooks (x-www-form-urlencoded)
 await fastify.register(formbody);
 
 // ---------------- ENV ----------------
@@ -18,7 +16,6 @@ const {
   ACUITY_USER_ID,
   ACUITY_API_KEY,
   OPENAI_API_KEY,
-  RENDER_EXTERNAL_HOSTNAME,
   PORT = 10000,
 } = process.env;
 
@@ -65,7 +62,7 @@ function getTenantByToNumber(toNumber) {
   return Object.values(TENANTS)[0] || null;
 }
 
-// Load per-tenant knowledge if available, else fallback to global knowledge.md
+// Load per-tenant knowledge ONLY (no global fallback)
 function loadKnowledgeFor(tenant) {
   try {
     if (tenant?.tenant_id) {
@@ -73,60 +70,66 @@ function loadKnowledgeFor(tenant) {
       if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
     }
   } catch {}
-  try {
-    return fs.readFileSync("./knowledge.md", "utf8");
-  } catch {
-    return "";
-  }
+  // No fallback to knowledge.md by design
+  return "";
 }
 
-// Build tenant-aware VOICE prompt (includes canonical answers + overrides + caps)
+// Optional: tenant-provided extra instructions (kept fully generic)
+// You can feed a simple array of strings in tenants.json under "special_instructions": [...]
+function buildSpecialInstructions(t) {
+  const out = [];
+  if (Array.isArray(t?.special_instructions)) {
+    for (const s of t.special_instructions) {
+      if (s && typeof s === "string") out.push(`- ${s}`);
+    }
+  }
+  return out.length ? `Special Instructions:\n${out.join("\n")}` : "";
+}
+
+// Build tenant-aware VOICE prompt (parameterized only; no salon-specific assumptions)
 function buildVoicePrompt(tenant, kbTextRaw) {
   const t = tenant || {};
   const services = (t.services || []).join(", ");
   const pricing = (t.pricing_notes || []).join(" | ");
   const policies = (t.policies || []).join(" | ");
+  const hours = t.hours_string || "Hours not provided";
+  const location = t.location || "Location not provided";
+  const bookingLine = t.booking_url ? `- Booking Link: ${t.booking_url}` : null;
 
+  // Canonical Q&A (must-say)
   const canon =
     (t.canonical_answers || [])
       .map((it, i) => `Q${i + 1}: ${it.q}\nA${i + 1}: ${it.a}`)
       .join("\n") || "(none)";
 
+  // Hard overrides (regex → exact reply)
   const overrides =
     (t.overrides || [])
       .map((o) => `IF the user utterance matches /${o.match}/ THEN reply exactly: "${o.reply}"`)
       .join("\n");
 
+  // Field caps
   const fileCap = Number.isFinite(t.kb_per_file_char_cap) ? t.kb_per_file_char_cap : 10000;
   const instrCap = Number.isFinite(t.instructions_char_cap) ? t.instructions_char_cap : 24000;
-
   const kbText = (kbTextRaw || "").slice(0, fileCap);
+
+  const special = buildSpecialInstructions(t);
 
   let prompt = `
 You are the virtual receptionist for "${t.studio_name}" in ${t.timezone || "America/Detroit"}.
-Answer as a helpful, professional, and concise salon assistant.
-
-Priorities:
-1. Always ground your answers in the salon’s official information below.
-2. Keep answers short (3–5 sentences max).
-3. If unsure, ask a clarifying question or guide them to book a consultation using the Acuity consultation link if they want an in-person consultation OR direct them to the service portal for a personalized quote.
-4. Never make up prices, services, or policies.
+Speak warmly and clearly like a front-desk assistant. Keep answers under 20 seconds.
+Do not repeat or paraphrase the caller’s question. Answer directly and concisely.
 
 Salon Facts (always accurate):
 - Name: ${t.studio_name}
-- Location: ${t.location || "Inside U Natural Hair, Suite 9; parking in rear lot"}
-- Hours: ${t.hours_string || "Sun–Fri, 10 AM – 6 PM Eastern"}
-- Booking Link: ${t.booking_url}
-- Services: ${services}
-- Pricing: ${pricing}
-- Policies: ${policies}
+- Location: ${location}
+- Hours: ${hours}
+${bookingLine ? bookingLine : "" }
+- Services: ${services || "(none provided)"}
+- Pricing: ${pricing || "(none provided)"}
+- Policies: ${policies || "(none provided)"}
 
-Special Instructions:
-- If asked about walk-ins, always reply: "We serve by appointment only at this time. For future dates, please start at ${t.booking_url} and enter the service portal."
-- If asked for medical/scalp issues, say: "I can’t provide medical advice. Please consult a dermatologist."
-- Always offer the service portal to new clients for quotes, pricing, and booking when relevant.
-- New clients cannot book without a quote because they must first go through the service portal; do not give out direct Acuity Scheduling links unless the user says they already received a quote.
-- If a user is a return client and knows their recurring service, that user can be offered a booking link to book.
+${special || ""}
 
 Canonical Q&A (use verbatim where applicable):
 ${canon}
@@ -143,10 +146,10 @@ ${kbText || "(none)"}
 
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
-  return { status: "ok", service: "LocSync Voice Agent with Acuity + Knowledge (tenant-aware)" };
+  return { status: "ok", service: "LocSync Voice Agent (multi-tenant, generic)" };
 });
 
-// Twilio webhook: incoming call (tenant-aware greeting)
+// Incoming call: tenant-aware greeting (from tenants.json)
 fastify.post("/incoming-call", async (req, reply) => {
   const toNumber = (req.body?.To || "").trim();
   const tenant = getTenantByToNumber(toNumber) || {};
@@ -167,7 +170,7 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Handle speech from caller (tenant-aware prompt + model/temperature)
+// Handle speech: try booking, else tenant-aware OpenAI
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult;
   const toNumber = (req.body?.To || "").trim();
@@ -183,9 +186,8 @@ fastify.post("/handle-speech", async (req, reply) => {
     if (bookingMsg && !bookingMsg.includes("I didn’t understand")) {
       response.say(bookingMsg);
     } else {
-      // Fallback: OpenAI answer from tenant-aware prompt + per-tenant knowledge
       try {
-        const kbText = loadKnowledgeFor(tenant);
+        const kbText = loadKnowledgeFor(tenant);           // per-tenant only (no fallback)
         const systemPrompt = buildVoicePrompt(tenant, kbText);
 
         const model = tenant?.model || "gpt-4o-mini";
