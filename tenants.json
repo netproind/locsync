@@ -4,11 +4,14 @@
     "phone_number": "+13134555627",
     "studio_name": "The Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
+    "location": "Detroit, Michigan",
+    
     "hours": { 
       "open_days": [0, 1, 2, 3, 4, 5],
       "open_hour": 11,
       "close_hour": 19
     },
+    "hours_string": "Monday through Saturday, 11 AM to 7 PM",
 
     "voice_provider": "openai",
     "voice": "alloy",
@@ -19,17 +22,24 @@
     "modalities": ["text", "audio"],
     "turn_detection": { "type": "server_vad" },
 
-    "greeting_tts": "Thanks for calling the Loc Repair Clinic. Connecting..how can I help you?",
+    "greeting_tts": "Thanks for calling the Loc Repair Clinic. How can I help you today?",
 
     "kb_per_file_char_cap": 10000,
     "instructions_char_cap": 24000,
 
     "booking_url": "https://www.locrepair.com/service_portal",
+    "sheets_web_app_url": "https://script.google.com/macros/s/AKfycbzIqshpATj1tIB_JOTcZ436rVeHcFgfXDz76QP7GYglydx_LIQNrijwTn3YspGG_J0DBw/exec",
+    
     "services": ["Retwists", "Crochet Repair", "Interlock Maintenance", "Bald Coverage"],
-    "pricing_notes": ["Interlock starts at $95 for 2–3 turns, $135 for 4–6 turns"],
+    "pricing_notes": [
+      "Interlock starts at $95 for 2–3 turns, $135 for 4–6 turns",
+      "Consultation required for bald coverage",
+      "Deposits required for all services"
+    ],
     "policies": [
-      "24h reschedule policy",
-      "Deposits non-refundable after certain times. See terms at locrepair.com/terms"
+      "24-hour reschedule policy required",
+      "Deposits non-refundable after certain times",
+      "See full terms at locrepair.com/terms"
     ],
 
     "faq_urls": [
@@ -39,23 +49,43 @@
     "canonical_answers": [
       {
         "q": "How can I get an appointment?",
-        "a": "We serve by appointment only. You can start immediately at the service portal: locrepair.com/service_portal."
+        "a": "We serve by appointment only. You can book immediately at our service portal: locrepair.com/service_portal."
       },
       {
         "q": "How much is interlock maintenance?",
-        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. You can start right now for quote first at locrepair.com/service_portal."
+        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. Start your quote at locrepair.com/service_portal."
       },
       {
         "q": "How can I get bald coverage?",
-        "a": "If you live in the Metro Detroit area, you are eligible for a consultation. Please text COVERAGE to 313-488-4898 now to get started."
+        "a": "If you live in Metro Detroit, you're eligible for a consultation. Text COVERAGE to 313-488-4898 to get started."
+      },
+      {
+        "q": "What are your hours?",
+        "a": "We're open Monday through Saturday, 11 AM to 7 PM. We're closed Sundays."
+      },
+      {
+        "q": "Where are you located?",
+        "a": "We're located in Detroit, Michigan. The exact address will be provided when you book your appointment."
       }
     ],
 
     "overrides": [
       {
         "match": "\\bwalk[- ]?in(s)?\\b",
-        "reply": "We’re appointment-only. You can book online right now for future slots as early as tomorrow at locrepair.com/service_portal."
+        "reply": "We're appointment-only. You can book online right now for slots as early as tomorrow at locrepair.com/service_portal."
+      },
+      {
+        "match": "\\bemergency\\b|\\burgent\\b",
+        "reply": "For emergency hair issues, please text URGENT to 313-488-4898 and we'll prioritize your request."
       }
+    ],
+
+    "special_instructions": [
+      "Always mention the online booking portal when discussing appointments",
+      "Be knowledgeable about loc care and maintenance",
+      "Use warm, professional Detroit energy",
+      "If asked about pricing, always mention consultation requirement",
+      "Direct urgent requests to text messaging system"
     ]
   }
-}
+      }
