@@ -2,7 +2,6 @@ import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import twilio from "twilio";
 import fs from "fs";
-import OpenAI from "openai";
 
 const fastify = Fastify({ logger: true });
 await fastify.register(formbody);
@@ -12,20 +11,20 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
-  OPENAI_API_KEY,
   PORT = 10000,
 } = process.env;
 
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI_API_KEY) {
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
   console.error("❌ Missing required environment variables");
   process.exit(1);
 }
 
 const twiml = twilio.twiml.VoiceResponse;
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ---------------- TENANTS ----------------
 let TENANTS = {};
+let SHEETS_CACHE = {}; // store appointments per tenant
+
 try {
   TENANTS = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
   fastify.log.info("✅ Loaded tenants.json");
@@ -36,26 +35,21 @@ try {
 // Resolve tenant from Twilio "To" number
 function getTenantByToNumber(toNumber) {
   if (!toNumber) return null;
-
   const normalized = normalizePhone(toNumber);
-  
-  // Case 1: Direct phone number key
+
   if (TENANTS[toNumber]) return TENANTS[toNumber];
   if (TENANTS[normalized]) return TENANTS[normalized];
-  
-  // Case 2: Search by phone_number field
+
   for (const tenant of Object.values(TENANTS)) {
     if (tenant?.phone_number) {
       const tenantNormalized = normalizePhone(tenant.phone_number);
       if (tenantNormalized === normalized) return tenant;
     }
   }
-  
-  // Fallback to first tenant
   return Object.values(TENANTS)[0] || null;
 }
 
-// Bulletproof phone normalization
+// Normalize phone
 function normalizePhone(phone) {
   if (!phone) return '';
   return phone.replace(/\D/g, '').slice(-10);
@@ -79,87 +73,31 @@ function loadKnowledgeFor(tenant) {
   return "";
 }
 
-// Build voice prompt
-function buildVoicePrompt(tenant, knowledgeText) {
-  const t = tenant || {};
-  const services = (t.services || []).join(", ");
-  const hours = t.hours_string || "Please call during business hours";
-  const location = t.location || "Location available upon request";
-
-  const canonicalQA = (t.canonical_answers || [])
-    .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
-    .join("\n") || "(none)";
-
-  const kbText = (knowledgeText || "").slice(0, 8000);
-
-  let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}".
-
-IMPORTANT: Keep responses under 15 seconds. Be warm, professional, and direct. Never spell out URLs letter by letter - just say "visit our online portal" or "check our website".
-
-Salon Information:
-- Name: ${t.studio_name || 'The Salon'}
-- Location: ${location}
-- Hours: ${hours}
-- Services: ${services || "Hair care services"}
-
-Canonical Q&A (use these exact responses):
-${canonicalQA}
-
-Knowledge Base:
-${kbText}
-
-Remember: Answer directly, don't spell out URLs, keep responses conversational and under 15 seconds.`;
-
-  return prompt.slice(0, 20000);
-}
-
-// Google Sheets API integration
-async function callGoogleSheetsAPI(tenant, action, params = {}) {
-  if (!tenant?.sheets_web_app_url) {
-    fastify.log.warn({ tenant: tenant?.tenant_id }, "No sheets_web_app_url configured");
-    return { handled: false, speech: "I'm unable to access appointment information right now." };
-  }
+// Async preload Sheets data
+async function preloadSheetsData(tenant) {
+  if (!tenant?.sheets_web_app_url) return;
 
   try {
     const url = new URL(tenant.sheets_web_app_url);
-    url.searchParams.set('action', action);
-    
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.set(key, value);
-      }
-    });
+    url.searchParams.set('action', 'appt_lookup_all');
 
-    fastify.log.info({ url: url.toString() }, "Calling Google Sheets API");
-
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' },
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
+    const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 
     const data = await response.json();
-    fastify.log.info({ data }, "Google Sheets API response");
-    
-    return data;
+    SHEETS_CACHE[tenant.tenant_id] = data;
+    fastify.log.info({ tenant: tenant.tenant_id, count: data.length }, "✅ Preloaded fresh Sheets data");
   } catch (err) {
-    fastify.log.error({ err, tenant: tenant?.tenant_id, action }, "Google Sheets API error");
-    return { 
-      handled: false, 
-      speech: "I'm having trouble accessing our appointment system. Please try again in a few minutes." 
-    };
+    fastify.log.error({ err, tenant: tenant?.tenant_id }, "❌ Failed to preload sheets");
   }
 }
 
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
-  return { 
-    status: "ok", 
+  return {
+    status: "ok",
     service: "LocSync Voice Agent",
-    tenants: Object.keys(TENANTS).length 
+    tenants: Object.keys(TENANTS).length
   };
 });
 
@@ -173,15 +111,17 @@ fastify.post("/incoming-call", async (req, reply) => {
   const fromNumber = (req.body?.From || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  fastify.log.info({ 
-    to: toNumber, 
-    from: fromNumber, 
-    tenant: tenant?.tenant_id 
+  fastify.log.info({
+    to: toNumber,
+    from: fromNumber,
+    tenant: tenant?.tenant_id
   }, "Incoming call");
 
+  // Fire preload in background (non-blocking)
+  preloadSheetsData(tenant);
+
   const response = new twiml();
-  
-  const greeting = tenant?.greeting_tts || 
+  const greeting = tenant?.greeting_tts ||
     `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you today?`;
 
   response.say(greeting);
@@ -196,18 +136,16 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Handle speech input
+// Handle speech input (STRICT MODE - no AI fallback)
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult?.trim() || "";
   const toNumber = (req.body?.To || "").trim();
   const fromNumber = (req.body?.From || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  // Debug tenant lookup
   fastify.log.info({
     speech: speechResult,
     tenant: tenant?.tenant_id,
-    hasSheetUrl: !!tenant?.sheets_web_app_url,
     from: fromNumber
   }, "Processing speech");
 
@@ -224,50 +162,57 @@ fastify.post("/handle-speech", async (req, reply) => {
     const lowerSpeech = speechResult.toLowerCase();
     let handled = false;
 
-    // Check for appointment-related requests
-    if (lowerSpeech.includes('appointment') || 
-        lowerSpeech.includes('book') || 
-        lowerSpeech.includes('schedule') || 
-        lowerSpeech.includes('cancel') || 
-        lowerSpeech.includes('reschedule') ||
-        lowerSpeech.includes('look') ||
-        lowerSpeech.includes('check') ||
-        lowerSpeech.includes('find')) {
-      
-      fastify.log.info({ phone: fromNumber }, "Appointment request detected");
-      
-      const appointmentResult = await callGoogleSheetsAPI(tenant, 'appt_lookup', {
-        phone: fromNumber
-      });
-      
-      if (appointmentResult.handled) {
-        response.say(appointmentResult.speech);
-        handled = true;
+    // --- Tier 1: Appointment requests from cache
+    if (/\b(appointment|book|schedule|cancel|reschedule|check|find|look)\b/.test(lowerSpeech)) {
+      const tenantId = tenant?.tenant_id;
+      const phoneClean = fromNumber.replace(/\D/g, '').slice(-10);
+
+      const appts = SHEETS_CACHE[tenantId] || null;
+
+      if (!appts) {
+        response.say("I’m still syncing appointment data. Please ask again in a moment.");
+      } else {
+        const found = appts.filter(row => row.phone === phoneClean);
+        if (found.length > 0) {
+          response.say(`You have ${found.length} appointment${found.length > 1 ? "s" : ""} on file.`);
+        } else {
+          response.say("I couldn’t find any appointments. Please check our booking portal.");
+        }
+      }
+      handled = true;
+    }
+
+    // --- Tier 2: Canonical Q&A
+    if (!handled && tenant?.canonical_answers) {
+      for (const qa of tenant.canonical_answers) {
+        const regex = new RegExp(qa.q, "i");
+        if (regex.test(lowerSpeech)) {
+          response.say(qa.a);
+          handled = true;
+          break;
+        }
       }
     }
 
-    // If not handled by appointment logic, use OpenAI
+    // --- Tier 3: Knowledge.md keyword lookup
     if (!handled) {
-      const knowledgeText = loadKnowledgeFor(tenant);
-      const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
+      const knowledgeText = loadKnowledgeFor(tenant).toLowerCase();
+      const words = lowerSpeech.split(/\s+/);
+      let matched = false;
 
-      const model = tenant?.model || "gpt-4o-mini";
-      const temperature = tenant?.temperature ?? 0.7;
+      for (const word of words) {
+        if (word.length > 3 && knowledgeText.includes(word)) {
+          response.say("Please visit our booking portal for more details.");
+          matched = true;
+          handled = true;
+          break;
+        }
+      }
+    }
 
-      const completion = await openai.chat.completions.create({
-        model,
-        temperature,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: speechResult }
-        ],
-        max_tokens: 100
-      });
-
-      const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
-        "I'm sorry, I couldn't process that request right now.";
-      
-      response.say(aiResponse);
+    // --- Tier 4: Hard fallback
+    if (!handled) {
+      response.say("Please visit our booking portal for more details.");
     }
 
     // Continue conversation
@@ -277,7 +222,6 @@ fastify.post("/handle-speech", async (req, reply) => {
       method: "POST",
       timeout: 6
     });
-
     response.say("Anything else I can help with?");
 
   } catch (err) {
@@ -301,12 +245,25 @@ fastify.post("/incoming-sms", async (req, reply) => {
   const response = new twilio.twiml.MessagingResponse();
 
   try {
-    if (body.toLowerCase().includes('appointment') || 
-        body.toLowerCase().includes('book') || 
+    if (body.toLowerCase().includes('appointment') ||
+        body.toLowerCase().includes('book') ||
         body.toLowerCase().includes('cancel')) {
-      
-      const result = await callGoogleSheetsAPI(tenant, 'appt_lookup', { phone: fromNumber });
-      response.message(result.speech || "Please call us for appointment assistance.");
+
+      const tenantId = tenant?.tenant_id;
+      const phoneClean = fromNumber.replace(/\D/g, '').slice(-10);
+
+      const appts = SHEETS_CACHE[tenantId] || null;
+
+      if (!appts) {
+        response.message("I’m still syncing appointment data. Please try again in a few minutes.");
+      } else {
+        const found = appts.filter(row => row.phone === phoneClean);
+        if (found.length > 0) {
+          response.message(`You have ${found.length} appointment${found.length > 1 ? "s" : ""} on file.`);
+        } else {
+          response.message("No appointments found. Please check our booking portal.");
+        }
+      }
     } else {
       response.message("Thanks for texting! Please call us or visit our online portal for assistance.");
     }
@@ -322,7 +279,7 @@ fastify.post("/incoming-sms", async (req, reply) => {
 fastify.get("/test/:tenantId", async (req, reply) => {
   const { tenantId } = req.params;
   const tenant = TENANTS[tenantId] || TENANTS[`+${tenantId}`];
-  
+
   if (!tenant) {
     return { error: "Tenant not found", available: Object.keys(TENANTS) };
   }
@@ -330,21 +287,9 @@ fastify.get("/test/:tenantId", async (req, reply) => {
   return {
     tenant_id: tenant.tenant_id,
     has_sheet_url: !!tenant.sheets_web_app_url,
-    phone_normalized: normalizePhone(tenant.phone_number)
+    phone_normalized: normalizePhone(tenant.phone_number),
+    cached_appts: SHEETS_CACHE[tenant.tenant_id]?.length || 0
   };
-});
-
-fastify.get("/test-sheets/:tenantId", async (req, reply) => {
-  const { tenantId } = req.params;
-  const { phone, action = 'appt_lookup' } = req.query;
-  
-  const tenant = TENANTS[tenantId] || TENANTS[`+${tenantId}`];
-  if (!tenant) {
-    return { error: "Tenant not found" };
-  }
-
-  const result = await callGoogleSheetsAPI(tenant, action, { phone });
-  return result;
 });
 
 // ---------------- START SERVER ----------------
@@ -355,26 +300,4 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   }
   console.log(`🚀 LocSync Voice Bot running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
-});
-
-fastify.get("/debug-sheets", async (req, reply) => {
-  const tenant = TENANTS["yesha_locsync_v1"];
-  const testUrl = tenant.sheets_web_app_url + "?action=appt_lookup&phone=3134714195";
-  
-  try {
-    const response = await fetch(testUrl);
-    const text = await response.text();
-    
-    return {
-      url: testUrl,
-      status: response.status,
-      response: text,
-      headers: Object.fromEntries(response.headers.entries())
-    };
-  } catch (err) {
-    return {
-      error: err.message,
-      url: testUrl
-    };
-  }
 });
