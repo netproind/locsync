@@ -356,3 +356,25 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`🚀 LocSync Voice Bot running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
 });
+
+fastify.get("/debug-sheets", async (req, reply) => {
+  const tenant = TENANTS["yesha_locsync_v1"];
+  const testUrl = tenant.sheets_web_app_url + "?action=appt_lookup&phone=3134714195";
+  
+  try {
+    const response = await fetch(testUrl);
+    const text = await response.text();
+    
+    return {
+      url: testUrl,
+      status: response.status,
+      response: text,
+      headers: Object.fromEntries(response.headers.entries())
+    };
+  } catch (err) {
+    return {
+      error: err.message,
+      url: testUrl
+    };
+  }
+});
