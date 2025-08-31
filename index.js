@@ -324,6 +324,14 @@ fastify.post("/handle-speech", async (req, reply) => {
     let handled = false;
     let aiResponse = "";
 
+    // Add this right after getting the tenant
+console.log("TENANT DEBUG:", {
+  toNumber: toNumber,
+  allTenantKeys: Object.keys(TENANTS),
+  foundTenant: !!tenant,
+  tenantId: tenant?.tenant_id,
+  hasSheetUrl: !!tenant?.sheets_web_app_url
+});
     // Check for appointment-related intents first
     const lowerSpeech = speechResult.toLowerCase();
     
