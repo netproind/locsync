@@ -73,7 +73,7 @@ function loadKnowledgeFor(tenant) {
   return "";
 }
 
-// Async preload Sheets data
+// Preload Sheets data
 async function preloadSheetsData(tenant) {
   if (!tenant?.sheets_web_app_url) return;
 
@@ -87,9 +87,19 @@ async function preloadSheetsData(tenant) {
     const data = await response.json();
     SHEETS_CACHE[tenant.tenant_id] = data;
     fastify.log.info({ tenant: tenant.tenant_id, count: data.length }, "✅ Preloaded fresh Sheets data");
+    return data;
   } catch (err) {
     fastify.log.error({ err, tenant: tenant?.tenant_id }, "❌ Failed to preload sheets");
+    return null;
   }
+}
+
+// Race preload with timeout (max wait)
+async function preloadWithTimeout(tenant, ms = 2000) {
+  return Promise.race([
+    preloadSheetsData(tenant),
+    new Promise((resolve) => setTimeout(() => resolve(null), ms))
+  ]);
 }
 
 // ---------------- ROUTES ----------------
@@ -117,8 +127,8 @@ fastify.post("/incoming-call", async (req, reply) => {
     tenant: tenant?.tenant_id
   }, "Incoming call");
 
-  // Fire preload in background (non-blocking)
-  preloadSheetsData(tenant);
+  // Try to preload within 2s (else continue async)
+  preloadWithTimeout(tenant, 2000);
 
   const response = new twiml();
   const greeting = tenant?.greeting_tts ||
@@ -136,7 +146,7 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Handle speech input (STRICT MODE - no AI fallback)
+// Handle speech input
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult?.trim() || "";
   const toNumber = (req.body?.To || "").trim();
