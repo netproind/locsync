@@ -5,7 +5,7 @@
     "studio_name": "The Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
     "location": "Detroit, Michigan",
-    
+    "sheets_web_app_url": "https://script.google.com/macros/s/AKfycbxRhLLlUI63wM8iREMpB-NNIFGjQSmdXve2DQcZsFmpoRxdUezRxnKGe-EXjJl703tD/exec"
     "hours": { 
       "open_days": [0, 1, 2, 3, 4, 5],
       "open_hour": 11,
