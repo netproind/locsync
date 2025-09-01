@@ -192,6 +192,27 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
+    fastify.get("/debug-sheets", async (req, reply) => {
+  const tenant = TENANTS["yesha_locsync_v1"];
+  const testUrl = tenant.sheets_web_app_url + "?action=appt_lookup&phone=3134714195";
+  
+  try {
+    const response = await fetch(testUrl);
+    const text = await response.text();
+    
+    return {
+      url: testUrl,
+      status: response.status,
+      response: text
+    };
+  } catch (err) {
+    return {
+      error: err.message,
+      url: testUrl
+    };
+  }
+});
+
     // --- Tier 2: Canonical Q&A
     if (!handled && tenant?.canonical_answers) {
       for (const qa of tenant.canonical_answers) {
