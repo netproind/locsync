@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import twilio from "twilio";
 import fs from "fs";
+import OpenAI from "openai";
 
 const fastify = Fastify({ logger: true });
 await fastify.register(formbody);
@@ -11,20 +12,21 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
+  OPENAI_API_KEY,
+  AIRTABLE_PAT, // Personal Access Token
   PORT = 10000,
 } = process.env;
 
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI_API_KEY || !AIRTABLE_PAT) {
   console.error("❌ Missing required environment variables");
   process.exit(1);
 }
 
 const twiml = twilio.twiml.VoiceResponse;
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ---------------- TENANTS ----------------
 let TENANTS = {};
-let SHEETS_CACHE = {}; // store appointments per tenant
-
 try {
   TENANTS = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
   fastify.log.info("✅ Loaded tenants.json");
@@ -35,21 +37,25 @@ try {
 // Resolve tenant from Twilio "To" number
 function getTenantByToNumber(toNumber) {
   if (!toNumber) return null;
-  const normalized = normalizePhone(toNumber);
 
+  const normalized = normalizePhone(toNumber);
+  
+  // Direct phone number key
   if (TENANTS[toNumber]) return TENANTS[toNumber];
   if (TENANTS[normalized]) return TENANTS[normalized];
-
+  
+  // Search by phone_number field
   for (const tenant of Object.values(TENANTS)) {
     if (tenant?.phone_number) {
       const tenantNormalized = normalizePhone(tenant.phone_number);
       if (tenantNormalized === normalized) return tenant;
     }
   }
+  
   return Object.values(TENANTS)[0] || null;
 }
 
-// Normalize phone
+// Bulletproof phone normalization
 function normalizePhone(phone) {
   if (!phone) return '';
   return phone.replace(/\D/g, '').slice(-10);
@@ -73,31 +79,140 @@ function loadKnowledgeFor(tenant) {
   return "";
 }
 
-// Async preload Sheets data
-async function preloadSheetsData(tenant) {
-  if (!tenant?.sheets_web_app_url) return;
+// Build voice prompt
+function buildVoicePrompt(tenant, knowledgeText) {
+  const t = tenant || {};
+  const services = (t.services || []).join(", ");
+  const hours = t.hours_string || "Please call during business hours";
+
+  const canonicalQA = (t.canonical_answers || [])
+    .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
+    .join("\n") || "(none)";
+
+  const kbText = (knowledgeText || "").slice(0, 8000);
+
+  let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}".
+
+CRITICAL: Keep responses under 15 seconds. Never spell out URLs - just say "visit our online portal" or "check our website".
+
+Salon Information:
+- Name: ${t.studio_name || 'The Salon'}
+- Hours: ${hours}
+- Services: ${services || "Hair care services"}
+
+Canonical Q&A (use these exact responses):
+${canonicalQA}
+
+Knowledge Base:
+${kbText}
+
+Remember: Be conversational, direct, and never spell out web addresses letter by letter.`;
+
+  return prompt.slice(0, 15000);
+}
+
+// Airtable API integration
+async function callAirtableAPI(tenant, action, params = {}) {
+  if (!tenant?.airtable_base_id || !tenant?.airtable_table_name) {
+    fastify.log.warn({ tenant: tenant?.tenant_id }, "Missing Airtable configuration");
+    return { handled: false, speech: "I can't access appointment information right now." };
+  }
 
   try {
-    const url = new URL(tenant.sheets_web_app_url);
-    url.searchParams.set('action', 'appt_lookup_all');
+    const baseUrl = `https://api.airtable.com/v0/${tenant.airtable_base_id}/${tenant.airtable_table_name}`;
+    let url = baseUrl;
+    
+    if (action === 'lookup_appointments' && params.phone) {
+      const phoneNorm = normalizePhone(params.phone);
+      // Search by phone number using Airtable's filter
+      url += `?filterByFormula=SEARCH("${phoneNorm}",{client_phone})`;
+    }
 
-    const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    fastify.log.info({ url }, "Calling Airtable API");
+
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${AIRTABLE_PAT}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Airtable API error: ${response.status}`);
+    }
 
     const data = await response.json();
-    SHEETS_CACHE[tenant.tenant_id] = data;
-    fastify.log.info({ tenant: tenant.tenant_id, count: data.length }, "✅ Preloaded fresh Sheets data");
+    fastify.log.info({ recordCount: data.records?.length }, "Airtable response");
+
+    // Process the response
+    if (action === 'lookup_appointments') {
+      return processAppointmentLookup(data.records || [], params.phone);
+    }
+
+    return { handled: true, speech: "Request processed", data };
+
   } catch (err) {
-    fastify.log.error({ err, tenant: tenant?.tenant_id }, "❌ Failed to preload sheets");
+    fastify.log.error({ err, action }, "Airtable API error");
+    return { 
+      handled: false, 
+      speech: "I'm having trouble accessing appointments. Please try again in a moment." 
+    };
   }
+}
+
+// Process appointment lookup results
+function processAppointmentLookup(records, searchPhone) {
+  if (records.length === 0) {
+    return {
+      handled: true,
+      speech: "I don't see any appointments under your number. Would you like to book online at our portal?",
+      data: { appointments: [] }
+    };
+  }
+
+  const appointments = records.map(record => ({
+    service: record.fields.service || 'Service',
+    date: record.fields.start_iso || record.fields.date,
+    status: record.fields.status || 'scheduled',
+    client_name: record.fields.client_first || 'Client'
+  }));
+
+  // Filter for upcoming appointments
+  const upcoming = appointments.filter(apt => {
+    if (!apt.date) return true;
+    try {
+      return new Date(apt.date) >= new Date();
+    } catch {
+      return true;
+    }
+  });
+
+  if (upcoming.length === 0) {
+    return {
+      handled: true,
+      speech: "I don't see any upcoming appointments. Would you like to schedule a new one at our portal?",
+      data: { appointments }
+    };
+  }
+
+  const next = upcoming[0];
+  const speech = upcoming.length === 1 
+    ? `You have an appointment for ${next.service}. Would you like to manage it?`
+    : `You have ${upcoming.length} appointments. Your next is for ${next.service}. Need to make changes?`;
+
+  return {
+    handled: true,
+    speech,
+    data: { appointments: upcoming }
+  };
 }
 
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
-  return {
-    status: "ok",
-    service: "LocSync Voice Agent",
-    tenants: Object.keys(TENANTS).length
+  return { 
+    status: "ok", 
+    service: "LocSync Voice Agent - Airtable",
+    tenants: Object.keys(TENANTS).length 
   };
 });
 
@@ -111,18 +226,11 @@ fastify.post("/incoming-call", async (req, reply) => {
   const fromNumber = (req.body?.From || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  fastify.log.info({
-    to: toNumber,
-    from: fromNumber,
-    tenant: tenant?.tenant_id
-  }, "Incoming call");
-
-  // Fire preload in background (non-blocking)
-  preloadSheetsData(tenant);
+  fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
 
   const response = new twiml();
-  const greeting = tenant?.greeting_tts ||
-    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you today?`;
+  const greeting = tenant?.greeting_tts || 
+    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
 
   response.say(greeting);
   response.gather({
@@ -136,17 +244,17 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Handle speech input (STRICT MODE - no AI fallback)
+// Handle speech input
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult?.trim() || "";
   const toNumber = (req.body?.To || "").trim();
   const fromNumber = (req.body?.From || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  fastify.log.info({
-    speech: speechResult,
+  fastify.log.info({ 
+    speech: speechResult, 
     tenant: tenant?.tenant_id,
-    from: fromNumber
+    hasAirtable: !!(tenant?.airtable_base_id && tenant?.airtable_table_name)
   }, "Processing speech");
 
   const response = new twiml();
@@ -162,57 +270,48 @@ fastify.post("/handle-speech", async (req, reply) => {
     const lowerSpeech = speechResult.toLowerCase();
     let handled = false;
 
-    // --- Tier 1: Appointment requests from cache
-    if (/\b(appointment|book|schedule|cancel|reschedule|check|find|look)\b/.test(lowerSpeech)) {
-      const tenantId = tenant?.tenant_id;
-      const phoneClean = fromNumber.replace(/\D/g, '').slice(-10);
-
-      const appts = SHEETS_CACHE[tenantId] || null;
-
-      if (!appts) {
-        response.say("I’m still syncing appointment data. Please ask again in a moment.");
-      } else {
-        const found = appts.filter(row => row.phone === phoneClean);
-        if (found.length > 0) {
-          response.say(`You have ${found.length} appointment${found.length > 1 ? "s" : ""} on file.`);
-        } else {
-          response.say("I couldn’t find any appointments. Please check our booking portal.");
-        }
-      }
-      handled = true;
-    }
-
-    // --- Tier 2: Canonical Q&A
-    if (!handled && tenant?.canonical_answers) {
-      for (const qa of tenant.canonical_answers) {
-        const regex = new RegExp(qa.q, "i");
-        if (regex.test(lowerSpeech)) {
-          response.say(qa.a);
-          handled = true;
-          break;
-        }
+    // Detect appointment-related requests
+    if (lowerSpeech.includes('appointment') || 
+        lowerSpeech.includes('book') || 
+        lowerSpeech.includes('schedule') || 
+        lowerSpeech.includes('cancel') || 
+        lowerSpeech.includes('reschedule') ||
+        lowerSpeech.includes('look') ||
+        lowerSpeech.includes('check') ||
+        lowerSpeech.includes('find') ||
+        lowerSpeech.includes('have any')) {
+      
+      fastify.log.info({ phone: fromNumber }, "Appointment request detected - calling Airtable");
+      
+      const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+        phone: fromNumber
+      });
+      
+      if (appointmentResult.handled) {
+        response.say(appointmentResult.speech);
+        handled = true;
       }
     }
 
-    // --- Tier 3: Knowledge.md keyword lookup
+    // If not appointment request, use OpenAI
     if (!handled) {
-      const knowledgeText = loadKnowledgeFor(tenant).toLowerCase();
-      const words = lowerSpeech.split(/\s+/);
-      let matched = false;
+      const knowledgeText = loadKnowledgeFor(tenant);
+      const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
 
-      for (const word of words) {
-        if (word.length > 3 && knowledgeText.includes(word)) {
-          response.say("Please visit our booking portal for more details.");
-          matched = true;
-          handled = true;
-          break;
-        }
-      }
-    }
+      const completion = await openai.chat.completions.create({
+        model: tenant?.model || "gpt-4o-mini",
+        temperature: tenant?.temperature ?? 0.7,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: speechResult }
+        ],
+        max_tokens: 100
+      });
 
-    // --- Tier 4: Hard fallback
-    if (!handled) {
-      response.say("Please visit our booking portal for more details.");
+      const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
+        "I'm sorry, I couldn't process that right now.";
+      
+      response.say(aiResponse);
     }
 
     // Continue conversation
@@ -222,10 +321,11 @@ fastify.post("/handle-speech", async (req, reply) => {
       method: "POST",
       timeout: 6
     });
-    response.say("Anything else I can help with?");
+
+    response.say("Anything else?");
 
   } catch (err) {
-    fastify.log.error({ err }, "Error processing speech");
+    fastify.log.error({ err }, "Speech processing error");
     response.say("I'm having technical difficulties. Please try calling back.");
     response.hangup();
   }
@@ -240,36 +340,21 @@ fastify.post("/incoming-sms", async (req, reply) => {
   const toNumber = (req.body?.To || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  fastify.log.info({ body, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming SMS");
-
   const response = new twilio.twiml.MessagingResponse();
 
   try {
-    if (body.toLowerCase().includes('appointment') ||
-        body.toLowerCase().includes('book') ||
+    if (body.toLowerCase().includes('appointment') || 
+        body.toLowerCase().includes('book') || 
         body.toLowerCase().includes('cancel')) {
-
-      const tenantId = tenant?.tenant_id;
-      const phoneClean = fromNumber.replace(/\D/g, '').slice(-10);
-
-      const appts = SHEETS_CACHE[tenantId] || null;
-
-      if (!appts) {
-        response.message("I’m still syncing appointment data. Please try again in a few minutes.");
-      } else {
-        const found = appts.filter(row => row.phone === phoneClean);
-        if (found.length > 0) {
-          response.message(`You have ${found.length} appointment${found.length > 1 ? "s" : ""} on file.`);
-        } else {
-          response.message("No appointments found. Please check our booking portal.");
-        }
-      }
+      
+      const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone: fromNumber });
+      response.message(result.speech || "Please call us for appointment help.");
     } else {
-      response.message("Thanks for texting! Please call us or visit our online portal for assistance.");
+      response.message("Thanks for texting! Call us or visit our online portal for assistance.");
     }
   } catch (err) {
-    fastify.log.error({ err }, "SMS processing error");
-    response.message("Sorry, I'm having technical issues. Please call us directly.");
+    fastify.log.error({ err }, "SMS error");
+    response.message("Sorry, technical issues. Please call us.");
   }
 
   reply.type("text/xml").send(response.toString());
@@ -277,19 +362,28 @@ fastify.post("/incoming-sms", async (req, reply) => {
 
 // Test endpoints
 fastify.get("/test/:tenantId", async (req, reply) => {
-  const { tenantId } = req.params;
-  const tenant = TENANTS[tenantId] || TENANTS[`+${tenantId}`];
-
+  const tenant = TENANTS[req.params.tenantId];
   if (!tenant) {
     return { error: "Tenant not found", available: Object.keys(TENANTS) };
   }
 
   return {
     tenant_id: tenant.tenant_id,
-    has_sheet_url: !!tenant.sheets_web_app_url,
-    phone_normalized: normalizePhone(tenant.phone_number),
-    cached_appts: SHEETS_CACHE[tenant.tenant_id]?.length || 0
+    has_airtable: !!(tenant.airtable_base_id && tenant.airtable_table_name),
+    phone_normalized: normalizePhone(tenant.phone_number)
   };
+});
+
+fastify.get("/test-airtable/:tenantId", async (req, reply) => {
+  const tenant = TENANTS[req.params.tenantId];
+  const { phone = "3134714195" } = req.query;
+  
+  if (!tenant) {
+    return { error: "Tenant not found" };
+  }
+
+  const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone });
+  return result;
 });
 
 // ---------------- START SERVER ----------------
@@ -298,6 +392,6 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
     fastify.log.error(err);
     process.exit(1);
   }
-  console.log(`🚀 LocSync Voice Bot running on ${address}`);
+  console.log(`🚀 LocSync Voice Bot with Airtable running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
 });
