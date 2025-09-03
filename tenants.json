@@ -29,8 +29,7 @@
     "instructions_char_cap": 24000,
 
     "booking_url": "https://www.locrepair.com/service_portal",
-    "sheets_web_app_url": "https://script.google.com/macros/s/AKfycbzIqshpATj1tIB_JOTcZ436rVeHcFgfXDz76QP7GYglydx_LIQNrijwTn3YspGG_J0DBw/exec",
-    
+  
     "services": ["Retwists", "Crochet Repair", "Interlock Maintenance", "Bald Coverage"],
     "pricing_notes": [
       "Interlock starts at $95 for 2–3 turns, $135 for 4–6 turns",
