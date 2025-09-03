@@ -5,30 +5,30 @@
     "studio_name": "The Loc Repair Clinic at U Natural Hair",
     "timezone": "America/Detroit",
     "location": "Detroit, Michigan",
+    
     "airtable_base_id": "app9lztXMFpEO3mkF",
     "airtable_table_name": "Appointments",
+    
     "hours": { 
       "open_days": [0, 1, 2, 3, 4, 5],
       "open_hour": 11,
       "close_hour": 19
     },
-    "hours_string": "Monday through Saturday, 11 AM to 7 PM",
+    "hours_string": "Sunday through Friday, 11 AM to 7 PM",
 
     "voice_provider": "openai",
     "voice": "alloy",
-    "voice_style": "warm, Detroit-local, confident; clear enunciation; natural code-switching when caller uses AAVE; friendly but efficient",
-
     "model": "gpt-4o-mini",
     "temperature": 0.7,
-    "modalities": ["text", "audio"],
-    "turn_detection": { "type": "server_vad" },
 
     "greeting_tts": "Thanks for calling the Loc Repair Clinic. How can I help you today?",
-
-    "kb_per_file_char_cap": 10000,
-    "instructions_char_cap": 24000,
-
+    
     "booking_url": "https://www.locrepair.com/service_portal",
+    "contact_phone": "313-488-4898",
+    "contact_text_keywords": {
+      "coverage": "COVERAGE",
+      "urgent": "URGENT"
+    },
   
     "services": ["Retwists", "Crochet Repair", "Interlock Maintenance", "Bald Coverage"],
     "pricing_notes": [
@@ -37,55 +37,77 @@
       "Deposits required for all services"
     ],
     "policies": [
-      "24-hour reschedule policy required",
-      "Deposits non-refundable after certain times",
-      "See full terms at locrepair.com/terms"
-    ],
-
-    "faq_urls": [
-      "https://github.com/netproind/locsync/main/knowledge.md"
+      "72-hour reschedule policy required",
+      "Deposits non-refundable after certain times"
     ],
 
     "canonical_answers": [
       {
         "q": "How can I get an appointment?",
-        "a": "We serve by appointment only. You can book immediately at our service portal: locrepair.com/service_portal."
+        "a": "We serve by appointment only. You can book immediately at our online portal."
       },
       {
         "q": "How much is interlock maintenance?",
-        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. Start your quote at locrepair.com/service_portal."
+        "a": "Interlock maintenance starts at $95 for 2–3 turns, and $135 for 4–6 turns. A consultation and deposit are required. Start your quote at our portal."
       },
       {
         "q": "How can I get bald coverage?",
-        "a": "If you live in Metro Detroit, you're eligible for a consultation. Text COVERAGE to 313-488-4898 to get started."
+        "a": "If you live in Metro Detroit, you're eligible for a consultation. Text COVERAGE to our number to get started."
       },
       {
         "q": "What are your hours?",
-        "a": "We're open Monday through Saturday, 11 AM to 7 PM. We're closed Sundays."
-      },
-      {
-        "q": "Where are you located?",
-        "a": "We're located in Detroit, Michigan. The exact address will be provided when you book your appointment."
+        "a": "We're open Sunday through Friday, 11 AM to 7 PM. We're closed Saturdays."
       }
     ],
 
     "overrides": [
       {
         "match": "\\bwalk[- ]?in(s)?\\b",
-        "reply": "We're appointment-only. You can book online right now for slots as early as tomorrow at locrepair.com/service_portal."
-      },
-      {
-        "match": "\\bemergency\\b|\\burgent\\b",
-        "reply": "For emergency hair issues, please text URGENT to 313-488-4898 and we'll prioritize your request."
+        "reply": "We're appointment-only. You can book online right now for slots as early as tomorrow at our portal."
       }
+    ]
+  },
+
+  "example_maintenance_salon": {
+    "tenant_id": "example_maintenance_salon",
+    "phone_number": "+15551234567",
+    "studio_name": "Natural Loc Maintenance Studio",
+    "timezone": "America/New_York",
+    "location": "Brooklyn, New York",
+    
+    "airtable_base_id": "appXXXXXXXXXXXXXX",
+    "airtable_table_name": "Appointments",
+    
+    "hours_string": "Tuesday through Friday, 9 AM to 6 PM",
+    
+    "greeting_tts": "Thanks for calling Natural Loc Maintenance Studio. How can I help you?",
+    
+    "booking_url": "https://calendly.com/naturallocs",
+    "contact_phone": "555-123-4567",
+  
+    "services": ["Loc Maintenance", "Root Touch-ups", "Scalp Treatments", "Loc Styling"],
+    "pricing_notes": [
+      "Maintenance starts at $80",
+      "Pricing varies by loc length and density"
+    ],
+    "policies": [
+      "48-hour cancellation policy",
+      "Credit card required to hold appointments"
     ],
 
-    "special_instructions": [
-      "Always mention the online booking portal when discussing appointments",
-      "Be knowledgeable about loc care and maintenance",
-      "Use warm, professional Detroit energy",
-      "If asked about pricing, always mention consultation requirement",
-      "Direct urgent requests to text messaging system"
+    "canonical_answers": [
+      {
+        "q": "How can I get an appointment?",
+        "a": "Visit our online booking system to see available times and book your maintenance appointment."
+      },
+      {
+        "q": "How much is maintenance?",
+        "a": "Maintenance starts at $80 depending on your loc length and density. Book a consultation through our portal for exact pricing."
+      },
+      {
+        "q": "What are your hours?",
+        "a": "We're open Tuesday through Friday, 9 AM to 6 PM."
+      }
     ]
   }
-      }
+}
