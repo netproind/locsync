@@ -13,7 +13,7 @@ const {
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
   OPENAI_API_KEY,
-  AIRTABLE_PAT, // Personal Access Token
+  AIRTABLE_PAT,
   PORT = 10000,
 } = process.env;
 
@@ -79,11 +79,12 @@ function loadKnowledgeFor(tenant) {
   return "";
 }
 
-// Build voice prompt
+// Build voice prompt - STANDARDIZED for any salon type
 function buildVoicePrompt(tenant, knowledgeText) {
   const t = tenant || {};
   const services = (t.services || []).join(", ");
   const hours = t.hours_string || "Please call during business hours";
+  const bookingUrl = t.booking_url || "our online booking system";
 
   const canonicalQA = (t.canonical_answers || [])
     .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
@@ -99,6 +100,7 @@ Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
 - Hours: ${hours}
 - Services: ${services || "Hair care services"}
+- Booking: ${bookingUrl}
 
 Canonical Q&A (use these exact responses):
 ${canonicalQA}
@@ -124,7 +126,6 @@ async function callAirtableAPI(tenant, action, params = {}) {
     
     if (action === 'lookup_appointments' && params.phone) {
       const phoneNorm = normalizePhone(params.phone);
-      // Search by phone number using Airtable's filter
       url += `?filterByFormula=SEARCH("${phoneNorm}",{client_phone})`;
     }
 
@@ -144,9 +145,8 @@ async function callAirtableAPI(tenant, action, params = {}) {
     const data = await response.json();
     fastify.log.info({ recordCount: data.records?.length }, "Airtable response");
 
-    // Process the response
     if (action === 'lookup_appointments') {
-      return processAppointmentLookup(data.records || [], params.phone);
+      return processAppointmentLookup(data.records || [], params.phone, tenant);
     }
 
     return { handled: true, speech: "Request processed", data };
@@ -160,12 +160,14 @@ async function callAirtableAPI(tenant, action, params = {}) {
   }
 }
 
-// Process appointment lookup results
-function processAppointmentLookup(records, searchPhone) {
+// Process appointment lookup results - TENANT-AWARE
+function processAppointmentLookup(records, searchPhone, tenant) {
+  const bookingUrl = tenant?.booking_url || "our online booking system";
+  
   if (records.length === 0) {
     return {
       handled: true,
-      speech: "I don't see any appointments under your number. Would you like to book online at our portal?",
+      speech: `I don't see any appointments under your number. Would you like to book online at ${bookingUrl}?`,
       data: { appointments: [] }
     };
   }
@@ -190,7 +192,7 @@ function processAppointmentLookup(records, searchPhone) {
   if (upcoming.length === 0) {
     return {
       handled: true,
-      speech: "I don't see any upcoming appointments. Would you like to schedule a new one at our portal?",
+      speech: `I don't see any upcoming appointments. Would you like to schedule a new one at ${bookingUrl}?`,
       data: { appointments }
     };
   }
@@ -211,7 +213,7 @@ function processAppointmentLookup(records, searchPhone) {
 fastify.get("/", async () => {
   return { 
     status: "ok", 
-    service: "LocSync Voice Agent - Airtable",
+    service: "LocSync Voice Agent - Multi-Tenant",
     tenants: Object.keys(TENANTS).length 
   };
 });
@@ -350,7 +352,8 @@ fastify.post("/incoming-sms", async (req, reply) => {
       const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone: fromNumber });
       response.message(result.speech || "Please call us for appointment help.");
     } else {
-      response.message("Thanks for texting! Call us or visit our online portal for assistance.");
+      const bookingUrl = tenant?.booking_url || "our online portal";
+      response.message(`Thanks for texting! Call us or visit ${bookingUrl} for assistance.`);
     }
   } catch (err) {
     fastify.log.error({ err }, "SMS error");
@@ -360,7 +363,7 @@ fastify.post("/incoming-sms", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Test endpoints
+// Test endpoints - GENERIC phone number
 fastify.get("/test/:tenantId", async (req, reply) => {
   const tenant = TENANTS[req.params.tenantId];
   if (!tenant) {
@@ -370,16 +373,21 @@ fastify.get("/test/:tenantId", async (req, reply) => {
   return {
     tenant_id: tenant.tenant_id,
     has_airtable: !!(tenant.airtable_base_id && tenant.airtable_table_name),
-    phone_normalized: normalizePhone(tenant.phone_number)
+    phone_normalized: normalizePhone(tenant.phone_number),
+    booking_url: tenant.booking_url || "not configured"
   };
 });
 
 fastify.get("/test-airtable/:tenantId", async (req, reply) => {
   const tenant = TENANTS[req.params.tenantId];
-  const { phone = "3134714195" } = req.query;
+  const { phone } = req.query;
   
   if (!tenant) {
     return { error: "Tenant not found" };
+  }
+
+  if (!phone) {
+    return { error: "Phone parameter required for testing" };
   }
 
   const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone });
