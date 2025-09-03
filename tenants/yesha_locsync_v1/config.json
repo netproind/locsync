@@ -79,7 +79,54 @@
     "no_discounts": true,
     "no_gift_cards": true
   },
-  
+
+  {
+  "training_program_offered": {
+    "question": "Do you offer training classes or courses?",
+    "answer": "Yes, we offer a comprehensive Loc Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
+  },
+  "training_cost": {
+    "question": "How much does the training cost?",
+    "answer": "The training program costs 49 dollars per week and you can cancel anytime. Your first paying client, which typically brings in 95 dollars or more, can cover the cost of your training investment."
+  },
+  "training_experience_required": {
+    "question": "Do I need experience for the training program?",
+    "answer": "No experience is required. Our program is designed for beginners and we welcome students at all skill levels."
+  },
+  "training_curriculum": {
+    "question": "What do you learn in the training program?",
+    "answer": "You'll learn how to identify when repairs are needed, professional repair techniques for thinning roots, bald spots, and broken locs, understanding the difference between loc maintenance and repair, and how to earn income from repair services."
+  },
+  "training_duration": {
+    "question": "How long is the training program?",
+    "answer": "Training is delivered weekly in small, focused lessons so you can build skills step by step at a manageable pace."
+  },
+  "training_bonus": {
+    "question": "What bonus do you get for completing training?",
+    "answer": "Students who complete the program earn one free month booth rental at U Natural Hair in Southfield, Michigan. That's a 750 dollar plus value, which means you can immediately start taking clients and keeping all the money you make."
+  },
+  "training_location": {
+    "question": "Where is the training located?",
+    "answer": "Training takes place at U Natural Hair Loc Repair Clinic in Southfield, Michigan. You can ask about remote or virtual options if you're not local."
+  },
+  "training_enrollment": {
+    "question": "How do I sign up for training?",
+    "answer": "To enroll, you can text START to 3 1 3 4 8 8 4 8 9 8 or send a direct message to at loc repair expert on Instagram."
+  },
+  "training_availability": {
+    "question": "Are there limited spots for training?",
+    "answer": "Yes, enrollment is first come, first served. Once spots are filled, you'll be placed on a waitlist for the next available session."
+  },
+  "training_earning_potential": {
+    "question": "Can I start earning money after training?",
+    "answer": "Yes! The program prepares you to take paying clients right away. Many students cover their training costs with their first client, and completing students get a free month of booth rental to start their business immediately."
+  },
+  "training_remote_options": {
+    "question": "Do you offer remote or online training?",
+    "answer": "Training primarily takes place in Southfield, Michigan, but you can ask about remote or virtual options if you're not local."
+  }
+},
+
   "canonical_answers": [
     {
       "q": "How can I get an appointment?",
