@@ -374,7 +374,7 @@ fastify.post("/handle-speech", async (req, reply) => {
 
       const completion = await openai.chat.completions.create({
         model: tenant?.voice_config?.model || tenant?.model || "gpt-4o-mini",
-        temperature: tenant?.voice_config?.temperature || tenant?.temperature ?? 0.7,
+        temperature: tenant?.voice_config?.temperature || tenant?.temperature || 0.7,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: speechResult }
