@@ -25,34 +25,15 @@ if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI
 const twiml = twilio.twiml.VoiceResponse;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ---------------- TENANTS ----------------
+// ---------------- ENHANCED TENANT LOADING ----------------
 let TENANTS = {};
+let TENANT_DETAILS = new Map(); // Cache for detailed tenant info
+
 try {
   TENANTS = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
-  fastify.log.info("✅ Loaded tenants.json");
+  fastify.log.info("✅ Loaded tenants registry");
 } catch (e) {
   fastify.log.warn("⚠️ No tenants.json found. Using defaults.");
-}
-
-// Resolve tenant from Twilio "To" number
-function getTenantByToNumber(toNumber) {
-  if (!toNumber) return null;
-
-  const normalized = normalizePhone(toNumber);
-  
-  // Direct phone number key
-  if (TENANTS[toNumber]) return TENANTS[toNumber];
-  if (TENANTS[normalized]) return TENANTS[normalized];
-  
-  // Search by phone_number field
-  for (const tenant of Object.values(TENANTS)) {
-    if (tenant?.phone_number) {
-      const tenantNormalized = normalizePhone(tenant.phone_number);
-      if (tenantNormalized === normalized) return tenant;
-    }
-  }
-  
-  return Object.values(TENANTS)[0] || null;
 }
 
 // Bulletproof phone normalization
@@ -61,15 +42,80 @@ function normalizePhone(phone) {
   return phone.replace(/\D/g, '').slice(-10);
 }
 
+// Load detailed tenant configuration
+function loadTenantDetails(tenantId) {
+  if (TENANT_DETAILS.has(tenantId)) {
+    return TENANT_DETAILS.get(tenantId);
+  }
+
+  try {
+    const detailsPath = `./tenants/${tenantId}/config.json`;
+    if (fs.existsSync(detailsPath)) {
+      const details = JSON.parse(fs.readFileSync(detailsPath, "utf8"));
+      TENANT_DETAILS.set(tenantId, details);
+      return details;
+    }
+  } catch (err) {
+    fastify.log.warn({ err, tenantId }, "Error loading tenant details");
+  }
+  
+  return {};
+}
+
+// Enhanced tenant resolver with detailed config loading
+function getTenantByToNumber(toNumber) {
+  if (!toNumber) return null;
+
+  const normalized = normalizePhone(toNumber);
+  let baseTenant = null;
+  
+  // Find base tenant from registry
+  if (TENANTS[toNumber]) baseTenant = TENANTS[toNumber];
+  else if (TENANTS[normalized]) baseTenant = TENANTS[normalized];
+  else {
+    for (const tenant of Object.values(TENANTS)) {
+      if (tenant?.phone_number) {
+        const tenantNormalized = normalizePhone(tenant.phone_number);
+        if (tenantNormalized === normalized) {
+          baseTenant = tenant;
+          break;
+        }
+      }
+    }
+  }
+  
+  if (!baseTenant) {
+    baseTenant = Object.values(TENANTS)[0] || null;
+  }
+  
+  if (baseTenant?.tenant_id) {
+    // Merge base config with detailed config
+    const details = loadTenantDetails(baseTenant.tenant_id);
+    return { ...baseTenant, ...details };
+  }
+  
+  return baseTenant;
+}
+
 // Load tenant knowledge
 function loadKnowledgeFor(tenant) {
   try {
+    // Try tenant-specific knowledge first
     if (tenant?.tenant_id) {
-      const path = `./knowledge/${tenant.tenant_id}.md`;
-      if (fs.existsSync(path)) {
-        return fs.readFileSync(path, "utf8");
+      const tenantKnowledgePath = `./tenants/${tenant.tenant_id}/knowledge.md`;
+      if (fs.existsSync(tenantKnowledgePath)) {
+        const tenantKnowledge = fs.readFileSync(tenantKnowledgePath, "utf8");
+        
+        // Also load universal knowledge
+        if (fs.existsSync("./knowledge.md")) {
+          const universalKnowledge = fs.readFileSync("./knowledge.md", "utf8");
+          return universalKnowledge + "\n\n" + tenantKnowledge;
+        }
+        return tenantKnowledge;
       }
     }
+    
+    // Fallback to universal knowledge only
     if (fs.existsSync("./knowledge.md")) {
       return fs.readFileSync("./knowledge.md", "utf8");
     }
@@ -79,36 +125,62 @@ function loadKnowledgeFor(tenant) {
   return "";
 }
 
-// Build voice prompt - STANDARDIZED for any salon type
+// Enhanced voice prompt builder with detailed tenant data
 function buildVoicePrompt(tenant, knowledgeText) {
   const t = tenant || {};
-  const services = (t.services || []).join(", ");
-  const hours = t.hours_string || "Please call during business hours";
-  const bookingUrl = t.booking_url || "our online booking system";
-
+  
+  // Core info (always available)
+  const services = (t.services?.primary || t.services || []).join(", ");
+  const hours = t.hours?.hours_string || t.hours_string || "Please call during business hours";
+  
+  // Detailed info from tenant details file
+  const loctician = t.loctician_name || "our stylist";
+  const experience = t.experience_years ? `${t.experience_years} years experience` : "";
+  const specialties = (t.services?.specialties || t.specialties || []).join(", ");
+  
+  // Contact info
+  const website = t.contact?.website || t.website || "";
+  const instagram = t.contact?.instagram_handle || t.instagram_handle || "";
+  const address = t.address ? `Located at ${t.address}` : "";
+  
+  // Booking and policies
+  const bookingUrl = t.booking?.main_url || t.booking_url || "our online booking system";
+  const depositInfo = t.policies?.deposits ? "Deposits required for appointments" : "Deposits may be required";
+  const cancellationPolicy = t.policies?.cancellation ? "Please check our cancellation policy" : "Please call to cancel";
+  
+  // Canonical answers
   const canonicalQA = (t.canonical_answers || [])
     .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
     .join("\n") || "(none)";
+  
+  // Build comprehensive but concise prompt
+  let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}" with ${loctician}${experience ? ` (${experience})` : ""}.
 
-  const kbText = (knowledgeText || "").slice(0, 8000);
-
-  let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}".
-
-CRITICAL: Keep responses under 15 seconds. Never spell out URLs - just say "visit our online portal" or "check our website".
+CRITICAL: Keep responses under 15 seconds. Never spell out URLs - just say "visit our website" or "check our portal".
 
 Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
+- Loctician: ${loctician}${experience ? ` - ${experience}` : ""}
 - Hours: ${hours}
 - Services: ${services || "Hair care services"}
+${specialties ? `- Specialties: ${specialties}` : ""}
+${address}
+
+Booking & Policies:
 - Booking: ${bookingUrl}
+- Deposits: ${depositInfo}
+- Cancellations: ${cancellationPolicy}
+
+${website ? `Website: ${website}` : ""}
+${instagram ? `Instagram: ${instagram}` : ""}
 
 Canonical Q&A (use these exact responses):
 ${canonicalQA}
 
 Knowledge Base:
-${kbText}
+${(knowledgeText || "").slice(0, 8000)}
 
-Remember: Be conversational, direct, and never spell out web addresses letter by letter.`;
+Remember: Be conversational, direct, and never spell out web addresses.`;
 
   return prompt.slice(0, 15000);
 }
@@ -162,12 +234,12 @@ async function callAirtableAPI(tenant, action, params = {}) {
 
 // Process appointment lookup results - TENANT-AWARE
 function processAppointmentLookup(records, searchPhone, tenant) {
-  const bookingUrl = tenant?.booking_url || "our online booking system";
+  const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online booking system";
   
   if (records.length === 0) {
     return {
       handled: true,
-      speech: `I don't see any appointments under your number. Would you like to book online at ${bookingUrl}?`,
+      speech: `I don't see any appointments under your number. Would you like to book online at our portal?`,
       data: { appointments: [] }
     };
   }
@@ -192,7 +264,7 @@ function processAppointmentLookup(records, searchPhone, tenant) {
   if (upcoming.length === 0) {
     return {
       handled: true,
-      speech: `I don't see any upcoming appointments. Would you like to schedule a new one at ${bookingUrl}?`,
+      speech: `I don't see any upcoming appointments. Would you like to schedule a new one at our portal?`,
       data: { appointments }
     };
   }
@@ -231,7 +303,7 @@ fastify.post("/incoming-call", async (req, reply) => {
   fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
 
   const response = new twiml();
-  const greeting = tenant?.greeting_tts || 
+  const greeting = tenant?.voice_config?.greeting_tts || tenant?.greeting_tts || 
     `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
 
   response.say(greeting);
@@ -301,8 +373,8 @@ fastify.post("/handle-speech", async (req, reply) => {
       const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
 
       const completion = await openai.chat.completions.create({
-        model: tenant?.model || "gpt-4o-mini",
-        temperature: tenant?.temperature ?? 0.7,
+        model: tenant?.voice_config?.model || tenant?.model || "gpt-4o-mini",
+        temperature: tenant?.voice_config?.temperature || tenant?.temperature ?? 0.7,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: speechResult }
@@ -352,8 +424,8 @@ fastify.post("/incoming-sms", async (req, reply) => {
       const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone: fromNumber });
       response.message(result.speech || "Please call us for appointment help.");
     } else {
-      const bookingUrl = tenant?.booking_url || "our online portal";
-      response.message(`Thanks for texting! Call us or visit ${bookingUrl} for assistance.`);
+      const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online portal";
+      response.message(`Thanks for texting! Call us or visit our portal for assistance.`);
     }
   } catch (err) {
     fastify.log.error({ err }, "SMS error");
@@ -363,26 +435,29 @@ fastify.post("/incoming-sms", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Test endpoints - GENERIC phone number
+// Test endpoints
 fastify.get("/test/:tenantId", async (req, reply) => {
-  const tenant = TENANTS[req.params.tenantId];
-  if (!tenant) {
+  const baseTenant = TENANTS[req.params.tenantId];
+  if (!baseTenant) {
     return { error: "Tenant not found", available: Object.keys(TENANTS) };
   }
+  
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
 
   return {
-    tenant_id: tenant.tenant_id,
-    has_airtable: !!(tenant.airtable_base_id && tenant.airtable_table_name),
-    phone_normalized: normalizePhone(tenant.phone_number),
-    booking_url: tenant.booking_url || "not configured"
+    tenant_id: fullTenant?.tenant_id,
+    has_airtable: !!(fullTenant?.airtable_base_id && fullTenant?.airtable_table_name),
+    phone_normalized: normalizePhone(fullTenant?.phone_number),
+    booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
+    has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId)
   };
 });
 
 fastify.get("/test-airtable/:tenantId", async (req, reply) => {
-  const tenant = TENANTS[req.params.tenantId];
+  const baseTenant = TENANTS[req.params.tenantId];
   const { phone } = req.query;
   
-  if (!tenant) {
+  if (!baseTenant) {
     return { error: "Tenant not found" };
   }
 
@@ -390,7 +465,8 @@ fastify.get("/test-airtable/:tenantId", async (req, reply) => {
     return { error: "Phone parameter required for testing" };
   }
 
-  const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone });
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+  const result = await callAirtableAPI(fullTenant, 'lookup_appointments', { phone });
   return result;
 });
 
