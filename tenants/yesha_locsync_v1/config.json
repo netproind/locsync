@@ -32,8 +32,8 @@
   
   "booking": {
     "main_url": "https://www.locrepair.com/service_portal",
-    "square_site": "https://locrepairclinic.square.site",
-    "consultation_url": "https://book.squareup.com/appointments/3vo6amc3zywoh9/location/5Q27XWDSCRK0W/services/4FX7746XOIP22M4GJ4BK7K3I",
+    "square_site": "https://locrepair.as.me",
+    "consultation_url": "https://locrepair.as.me/?appointmentType=83061405,
     "requires_quote": true,
     "consultation_fee": 25
   },
