@@ -191,6 +191,9 @@ CRITICAL INSTRUCTIONS:
 - Be conversational and helpful
 - For appointment requests, guide them to the service portal and offer to text links
 - Never tell someone to just "visit our online system" and hang up
+- Address payment security concerns by mentioning in-person deposit options
+- Always offer to text helpful links and directions
+- Acknowledge when clients are running late and inform them Yesha is notified
 
 Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
@@ -458,59 +461,131 @@ fastify.post("/handle-speech", async (req, reply) => {
     const lowerSpeech = speechResult.toLowerCase();
     let handled = false;
 
-    // Determine the type of request
-    let requestType = 'lookup'; // default
+    // Handle specific scenarios first
     
-    if (lowerSpeech.includes('need an appointment') || 
-        lowerSpeech.includes('need appointment') ||
-        lowerSpeech.includes('want an appointment') ||
-        lowerSpeech.includes('want appointment') ||
-        lowerSpeech.includes('book') ||
-        lowerSpeech.includes('schedule')) {
-      requestType = 'booking';
-    } else if (lowerSpeech.includes('what time') || 
-               lowerSpeech.includes('when is') ||
-               lowerSpeech.includes('give me the time') ||
-               lowerSpeech.includes('appointment time') ||
-               lowerSpeech.includes('time is my')) {
-      requestType = 'time';
+    // Running late notification
+    if (lowerSpeech.includes('running late') || 
+        lowerSpeech.includes('running behind') ||
+        lowerSpeech.includes('late for') ||
+        (lowerSpeech.includes('late') && lowerSpeech.includes('appointment'))) {
+      response.say(tenant?.quick_responses?.running_late || "Thanks for the update! Yesha has been informed you're running behind.");
+      handled = true;
+    }
+    
+    // Same day cancellation concerns
+    else if (lowerSpeech.includes('may need to cancel') ||
+             lowerSpeech.includes('might cancel') ||
+             lowerSpeech.includes('same day cancel')) {
+      response.say("Please note that same day cancellations forfeit the deposit. If you still need to proceed, text CANCEL to 313-455-LOCS. Do you want to continue?");
+      handled = true;
+    }
+    
+    // In-person deposit payment requests
+    else if (lowerSpeech.includes('pay in person') ||
+             lowerSpeech.includes('deposit in person') ||
+             lowerSpeech.includes('come in to pay') ||
+             lowerSpeech.includes('scam') ||
+             lowerSpeech.includes('legitimate') ||
+             lowerSpeech.includes('trust')) {
+      response.say("I completely understand your concerns about online payments. We are a legitimate business and you can absolutely pay your deposit in person. Text DEPOSIT to 313-455-5627 to schedule a time to come in and pay.");
+      handled = true;
+    }
+    
+    // Directions and getting lost
+    else if (lowerSpeech.includes('lost') ||
+             lowerSpeech.includes('find you') ||
+             lowerSpeech.includes('directions') ||
+             lowerSpeech.includes('where are you') ||
+             lowerSpeech.includes("can't find")) {
+      response.say("I can help you find us! Text DIRECTIONS to 313-455-5627 and I'll send you detailed directions right to our door.");
+      const directionsUrl = tenant?.contact?.directions_url;
+      if (directionsUrl) {
+        await sendLinksViaSMS(fromNumber, toNumber, [directionsUrl], tenant);
+      }
+      handled = true;
+    }
+    
+    // Review requests
+    else if (lowerSpeech.includes('review') ||
+             lowerSpeech.includes('google review') ||
+             lowerSpeech.includes('leave review')) {
+      response.say("I'd love for you to leave a review! Text REVIEW to 313-455-5627 and I'll send you the link to our Google reviews.");
+      handled = true;
+    }
+    
+    // Service identification help
+    else if (lowerSpeech.includes("don't know what service") ||
+             lowerSpeech.includes("not sure what") ||
+             lowerSpeech.includes("don't know what it's called") ||
+             lowerSpeech.includes("help me find service")) {
+      response.say("No problem! If you know you need loc service but aren't sure what it's called, text PORTAL to 313-455-5627 and we'll help you find the right service for your needs.");
+      handled = true;
+    }
+    
+    // Booking timeframe questions
+    else if (lowerSpeech.includes('by when') ||
+             lowerSpeech.includes('how soon') ||
+             lowerSpeech.includes('book by') ||
+             lowerSpeech.includes('appointment by')) {
+      response.say("We book within 30 days from today. With your quote you should receive a booking link - be sure to check your spam folder. If you need the portal again, text PORTAL to 313-455-5627.");
+      handled = true;
     }
 
-    // Handle appointment-related requests
-    if (lowerSpeech.includes('appointment') || 
-        lowerSpeech.includes('book') || 
-        lowerSpeech.includes('schedule') || 
-        lowerSpeech.includes('cancel') || 
-        lowerSpeech.includes('reschedule') ||
-        lowerSpeech.includes('look') ||
-        lowerSpeech.includes('check') ||
-        lowerSpeech.includes('find') ||
-        lowerSpeech.includes('have any') ||
-        lowerSpeech.includes('time') ||
-        lowerSpeech.includes('when')) {
-      
-      fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
-      
-      const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
-        phone: fromNumber
-      }, requestType);
-      
-      if (appointmentResult.handled) {
-        response.say(appointmentResult.speech);
-        handled = true;
+    // Determine the type of request for existing appointment logic
+    let requestType = 'lookup'; // default
+    
+    if (!handled) {
+      if (lowerSpeech.includes('need an appointment') || 
+          lowerSpeech.includes('need appointment') ||
+          lowerSpeech.includes('want an appointment') ||
+          lowerSpeech.includes('want appointment') ||
+          lowerSpeech.includes('book') ||
+          lowerSpeech.includes('schedule')) {
+        requestType = 'booking';
+      } else if (lowerSpeech.includes('what time') || 
+                 lowerSpeech.includes('when is') ||
+                 lowerSpeech.includes('give me the time') ||
+                 lowerSpeech.includes('appointment time') ||
+                 lowerSpeech.includes('time is my')) {
+        requestType = 'time';
+      }
+
+      // Handle appointment-related requests
+      if (lowerSpeech.includes('appointment') || 
+          lowerSpeech.includes('book') || 
+          lowerSpeech.includes('schedule') || 
+          lowerSpeech.includes('cancel') || 
+          lowerSpeech.includes('reschedule') ||
+          lowerSpeech.includes('look') ||
+          lowerSpeech.includes('check') ||
+          lowerSpeech.includes('find') ||
+          lowerSpeech.includes('have any') ||
+          lowerSpeech.includes('time') ||
+          lowerSpeech.includes('when')) {
         
-        // If they need booking info, potentially send links
-        if (appointmentResult.data?.needsBooking) {
-          const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
-          const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+        fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
+        
+        const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+          phone: fromNumber
+        }, requestType);
+        
+        if (appointmentResult.handled) {
+          response.say(appointmentResult.speech);
+          handled = true;
           
-          if (bookingUrl) {
-            const links = [bookingUrl];
-            if (bookingSite && bookingSite !== bookingUrl) {
-              links.push(bookingSite);
+          // If they need booking info, potentially send links
+          if (appointmentResult.data?.needsBooking) {
+            const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+            const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+            
+            if (bookingUrl) {
+              const links = [bookingUrl];
+              if (bookingSite && bookingSite !== bookingUrl) {
+                links.push(bookingSite);
+              }
+              await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+              response.say(" I'm texting you the booking links now.");
             }
-            await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
-            response.say(" I'm texting you the booking links now.");
           }
         }
       }
