@@ -23,6 +23,7 @@ if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI
 }
 
 const twiml = twilio.twiml.VoiceResponse;
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ---------------- ENHANCED TENANT LOADING ----------------
@@ -36,13 +37,38 @@ try {
   fastify.log.warn("⚠️ No tenants.json found. Using defaults.");
 }
 
-// Bulletproof phone normalization
+// Function to extract URLs from text
+function extractUrls(text) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  return text.match(urlRegex) || [];
+}
+
+// Function to send SMS with links
+async function sendLinksViaSMS(fromNumber, toNumber, links, tenant) {
+  if (!links.length || !tenant?.voice_config?.send_links_via_sms) return;
+  
+  try {
+    const message = links.length === 1 
+      ? `Here's the link we mentioned: ${links[0]}`
+      : `Here are the links we mentioned:\n${links.map((link, i) => `${i + 1}. ${link}`).join('\n')}`;
+    
+    await twilioClient.messages.create({
+      body: message,
+      from: toNumber,
+      to: fromNumber
+    });
+    
+    fastify.log.info({ fromNumber, linkCount: links.length }, "SMS with links sent successfully");
+  } catch (err) {
+    fastify.log.error({ err, fromNumber }, "Failed to send SMS with links");
+  }
+}
 function normalizePhone(phone) {
   if (!phone) return '';
   return phone.replace(/\D/g, '').slice(-10);
 }
 
-// Load detailed tenant configuration
+// Bulletproof phone normalization
 function loadTenantDetails(tenantId) {
   if (TENANT_DETAILS.has(tenantId)) {
     return TENANT_DETAILS.get(tenantId);
@@ -145,6 +171,7 @@ function buildVoicePrompt(tenant, knowledgeText) {
   
   // Booking and policies
   const bookingUrl = t.booking?.main_url || t.booking_url || "our online booking system";
+  const bookingSite = t.booking?.booking_site || t.booking?.square_site || t.square_site || "";
   const depositInfo = t.policies?.deposits ? "Deposits required for appointments" : "Deposits may be required";
   const cancellationPolicy = t.policies?.cancellation ? "Please check our cancellation policy" : "Please call to cancel";
   
@@ -156,7 +183,14 @@ function buildVoicePrompt(tenant, knowledgeText) {
   // Build comprehensive but concise prompt
   let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}" with ${loctician}${experience ? ` (${experience})` : ""}.
 
-CRITICAL: Keep responses under 15 seconds. Never spell out URLs - just say "visit our website" or "check our portal".
+CRITICAL INSTRUCTIONS:
+- Keep responses under 15 seconds
+- Never spell out URLs - just say "visit our website" or "check our portal"
+- DO NOT repeat or rephrase the customer's question back to them
+- Answer directly and naturally
+- Be conversational and helpful
+- For appointment requests, guide them to the service portal and offer to text links
+- Never tell someone to just "visit our online system" and hang up
 
 Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
@@ -168,6 +202,7 @@ ${address}
 
 Booking & Policies:
 - Booking: ${bookingUrl}
+${bookingSite ? `- Booking Site: ${bookingSite}` : ""}
 - Deposits: ${depositInfo}
 - Cancellations: ${cancellationPolicy}
 
@@ -180,7 +215,7 @@ ${canonicalQA}
 Knowledge Base:
 ${(knowledgeText || "").slice(0, 8000)}
 
-Remember: Be conversational, direct, and never spell out web addresses.`;
+Remember: Be conversational, direct, and never spell out web addresses. Answer questions directly without repeating them.`;
 
   return prompt.slice(0, 15000);
 }
@@ -235,6 +270,7 @@ async function callAirtableAPI(tenant, action, params = {}) {
 // Process appointment lookup results - TENANT-AWARE
 function processAppointmentLookup(records, searchPhone, tenant) {
   const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online booking system";
+  const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site || "";
   
   if (records.length === 0) {
     return {
@@ -311,7 +347,7 @@ fastify.post("/incoming-call", async (req, reply) => {
     input: "speech",
     action: "/handle-speech",
     method: "POST",
-    timeout: 8,
+    timeout: 10,
     speechTimeout: "auto"
   });
 
@@ -334,8 +370,15 @@ fastify.post("/handle-speech", async (req, reply) => {
   const response = new twiml();
 
   if (!speechResult) {
-    response.say("I didn't catch that. Please call back and speak clearly.");
-    response.hangup();
+    response.say("I didn't catch that clearly. Could you please repeat what you need? I'm still here to help.");
+    response.gather({
+      input: "speech",
+      action: "/handle-speech",
+      method: "POST",
+      timeout: 10,
+      speechTimeout: "auto"
+    });
+    response.say("I'm waiting for your response.");
     reply.type("text/xml").send(response.toString());
     return;
   }
@@ -367,6 +410,31 @@ fastify.post("/handle-speech", async (req, reply) => {
       }
     }
 
+    // Handle specific "I need an appointment" requests
+    if (!handled && (lowerSpeech.includes('need an appointment') || 
+                     lowerSpeech.includes('need appointment') ||
+                     lowerSpeech.includes('want an appointment') ||
+                     lowerSpeech.includes('want appointment'))) {
+      
+      const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online booking system";
+      const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site || "";
+      
+      let appointmentResponse = "To schedule an appointment, please visit our service portal to get started with a quote.";
+      
+      if (bookingSite) {
+        appointmentResponse += " I can text you the link to make it easier.";
+        // Send booking links via SMS
+        const links = [bookingUrl];
+        if (bookingSite !== bookingUrl) {
+          links.push(bookingSite);
+        }
+        await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+      }
+      
+      response.say(appointmentResponse);
+      handled = true;
+    }
+
     // If not appointment request, use OpenAI
     if (!handled) {
       const knowledgeText = loadKnowledgeFor(tenant);
@@ -385,23 +453,41 @@ fastify.post("/handle-speech", async (req, reply) => {
       const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
         "I'm sorry, I couldn't process that right now.";
       
-      response.say(aiResponse);
+      // Check for URLs in the AI response and send via SMS if configured
+      const urls = extractUrls(aiResponse);
+      if (urls.length > 0) {
+        // Send links via SMS
+        await sendLinksViaSMS(fromNumber, toNumber, urls, tenant);
+        // Remove URLs from voice response and mention SMS
+        const cleanResponse = aiResponse.replace(/(https?:\/\/[^\s]+)/g, '').trim();
+        response.say(`${cleanResponse} I'm texting you the link now.`);
+      } else {
+        response.say(aiResponse);
+      }
     }
 
-    // Continue conversation
+    // Continue conversation with longer timeout for follow-up
     response.gather({
       input: "speech",
       action: "/handle-speech",
       method: "POST",
-      timeout: 6
+      timeout: 8,
+      speechTimeout: "auto"
     });
 
-    response.say("Anything else?");
+    response.say("Is there anything else I can help you with?");
 
   } catch (err) {
     fastify.log.error({ err }, "Speech processing error");
-    response.say("I'm having technical difficulties. Please try calling back.");
-    response.hangup();
+    response.say("I'm having a technical issue. Let me try again - what did you need help with?");
+    response.gather({
+      input: "speech",
+      action: "/handle-speech",
+      method: "POST",
+      timeout: 10,
+      speechTimeout: "auto"
+    });
+    response.say("I'm listening.");
   }
 
   reply.type("text/xml").send(response.toString());
@@ -425,6 +511,7 @@ fastify.post("/incoming-sms", async (req, reply) => {
       response.message(result.speech || "Please call us for appointment help.");
     } else {
       const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online portal";
+      const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site || "";
       response.message(`Thanks for texting! Call us or visit our portal for assistance.`);
     }
   } catch (err) {
@@ -449,6 +536,7 @@ fastify.get("/test/:tenantId", async (req, reply) => {
     has_airtable: !!(fullTenant?.airtable_base_id && fullTenant?.airtable_table_name),
     phone_normalized: normalizePhone(fullTenant?.phone_number),
     booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
+    booking_site: fullTenant?.booking?.booking_site || fullTenant?.booking?.square_site || fullTenant?.square_site || "not configured",
     has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId)
   };
 });
