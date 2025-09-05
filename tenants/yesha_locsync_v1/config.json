@@ -27,12 +27,14 @@
     "voice": "alloy", 
     "model": "gpt-4o-mini",
     "temperature": 0.7,
-    "greeting_tts": "Thanks for calling the Loc Repair Clinic. How can I help you today?"
+    "greeting_tts": "Thanks for calling the Loc Repair Clinic. How can I help you today?",
+    "no_repeat_questions": true,
+    "send_links_via_sms": true
   },
   
   "booking": {
     "main_url": "https://www.locrepair.com/service_portal",
-    "square_site": "https://locrepair.as.me",
+    "booking_site": "https://locrepair.as.me",
     "consultation_url": "https://locrepair.as.me/?appointmentType=83061405",
     "requires_quote": true,
     "consultation_fee": 25
@@ -80,7 +82,6 @@
     "no_gift_cards": true
   },
 
-  {
   "training_program_offered": {
     "question": "Do you offer training classes or courses?",
     "answer": "Yes, we offer a comprehensive Loc Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
@@ -124,13 +125,12 @@
   "training_remote_options": {
     "question": "Do you offer remote or online training?",
     "answer": "Training primarily takes place in Southfield, Michigan, but you can ask about remote or virtual options if you're not local."
-  }
-},
+  },
 
   "canonical_answers": [
     {
       "q": "How can I get an appointment?",
-      "a": "We serve by appointment only. Start with a quote at our service portal."
+      "a": "We serve by appointment only. Start with a quote at our service portal. I can text you the link if you'd like."
     },
     {
       "q": "Do you do wick locs?",
@@ -143,6 +143,10 @@
     {
       "q": "What about same day availability?",
       "a": "Text us at 313-488-LOCS for same day availability."
+    },
+    {
+      "q": "I need an appointment",
+      "a": "I'd be happy to help you get scheduled. Please visit our service portal to start with a quote, and I can text you the link to make it easier."
     }
   ],
   
@@ -152,6 +156,4 @@
     "reschedule": "Text RESCHEDULE to 313-455-5627 with your current appointment.",
     "urgent": "Text URGENT to 313-455-LOCS for priority scheduling."
   }
-}
-
-
+  }
