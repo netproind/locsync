@@ -221,7 +221,7 @@ Remember: Be conversational, direct, and never spell out web addresses. Answer q
 }
 
 // Airtable API integration
-async function callAirtableAPI(tenant, action, params = {}) {
+async function callAirtableAPI(tenant, action, params = {}, requestType = 'lookup') {
   if (!tenant?.airtable_base_id || !tenant?.airtable_table_name) {
     fastify.log.warn({ tenant: tenant?.tenant_id }, "Missing Airtable configuration");
     return { handled: false, speech: "I can't access appointment information right now." };
@@ -253,7 +253,7 @@ async function callAirtableAPI(tenant, action, params = {}) {
     fastify.log.info({ recordCount: data.records?.length }, "Airtable response");
 
     if (action === 'lookup_appointments') {
-      return processAppointmentLookup(data.records || [], params.phone, tenant);
+      return processAppointmentLookup(data.records || [], params.phone, tenant, requestType);
     }
 
     return { handled: true, speech: "Request processed", data };
@@ -268,53 +268,124 @@ async function callAirtableAPI(tenant, action, params = {}) {
 }
 
 // Process appointment lookup results - TENANT-AWARE
-function processAppointmentLookup(records, searchPhone, tenant) {
+function processAppointmentLookup(records, searchPhone, tenant, requestType = 'lookup') {
   const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online booking system";
   const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site || "";
   
   if (records.length === 0) {
+    if (requestType === 'booking') {
+      return {
+        handled: true,
+        speech: `I don't see any existing appointments. What type of service are you looking for today?`,
+        data: { appointments: [], needsBooking: true }
+      };
+    }
     return {
       handled: true,
-      speech: `I don't see any appointments under your number. Would you like to book online at our portal?`,
-      data: { appointments: [] }
+      speech: `I don't see any appointments under your number. Would you like to book a new appointment?`,
+      data: { appointments: [], needsBooking: true }
     };
   }
 
   const appointments = records.map(record => ({
     service: record.fields.service || 'Service',
     date: record.fields.start_iso || record.fields.date,
+    time: record.fields.time || extractTimeFromDate(record.fields.start_iso || record.fields.date),
     status: record.fields.status || 'scheduled',
     client_name: record.fields.client_first || 'Client'
   }));
 
   // Filter for upcoming appointments
+  const now = new Date();
   const upcoming = appointments.filter(apt => {
     if (!apt.date) return true;
     try {
-      return new Date(apt.date) >= new Date();
+      return new Date(apt.date) >= now;
     } catch {
       return true;
     }
   });
 
-  if (upcoming.length === 0) {
+  // If requesting to book and they have upcoming appointments
+  if (requestType === 'booking' && upcoming.length > 0) {
+    const next = upcoming[0];
+    const timeInfo = next.time ? ` at ${next.time}` : '';
     return {
       handled: true,
-      speech: `I don't see any upcoming appointments. Would you like to schedule a new one at our portal?`,
-      data: { appointments }
+      speech: `I see you already have an upcoming appointment for ${next.service}${timeInfo}. Would you like to schedule an additional appointment or manage your existing one?`,
+      data: { appointments: upcoming, hasExisting: true }
     };
   }
 
+  // If no upcoming appointments but they have past ones
+  if (upcoming.length === 0) {
+    if (requestType === 'booking') {
+      return {
+        handled: true,
+        speech: `I see your last appointment has passed. Are you a returning client looking to book another appointment, or do you need a new service quote?`,
+        data: { appointments, needsBooking: true, isReturning: true }
+      };
+    } else {
+      return {
+        handled: true,
+        speech: `Your last appointment has already passed. Would you like to schedule a new appointment?`,
+        data: { appointments, needsBooking: true, isReturning: true }
+      };
+    }
+  }
+
+  // For lookup requests with upcoming appointments
   const next = upcoming[0];
+  const timeInfo = next.time ? ` at ${next.time}` : '';
+  const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
+  
+  if (requestType === 'time' || requestType === 'when') {
+    return {
+      handled: true,
+      speech: `Your ${next.service} appointment is scheduled for ${dateInfo}${timeInfo}.`,
+      data: { appointments: upcoming }
+    };
+  }
+
   const speech = upcoming.length === 1 
-    ? `You have an appointment for ${next.service}. Would you like to manage it?`
-    : `You have ${upcoming.length} appointments. Your next is for ${next.service}. Need to make changes?`;
+    ? `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`
+    : `You have ${upcoming.length} appointments. Your next is ${next.service} on ${dateInfo}${timeInfo}. What would you like to do?`;
 
   return {
     handled: true,
     speech,
     data: { appointments: upcoming }
   };
+}
+
+// Helper function to extract time from date string
+function extractTimeFromDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+  } catch {
+    return '';
+  }
+}
+
+// Helper function to format appointment date
+function formatAppointmentDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { 
+      weekday: 'long',
+      month: 'long', 
+      day: 'numeric'
+    });
+  } catch {
+    return dateStr;
+  }
 }
 
 // ---------------- ROUTES ----------------
@@ -387,7 +458,25 @@ fastify.post("/handle-speech", async (req, reply) => {
     const lowerSpeech = speechResult.toLowerCase();
     let handled = false;
 
-    // Detect appointment-related requests
+    // Determine the type of request
+    let requestType = 'lookup'; // default
+    
+    if (lowerSpeech.includes('need an appointment') || 
+        lowerSpeech.includes('need appointment') ||
+        lowerSpeech.includes('want an appointment') ||
+        lowerSpeech.includes('want appointment') ||
+        lowerSpeech.includes('book') ||
+        lowerSpeech.includes('schedule')) {
+      requestType = 'booking';
+    } else if (lowerSpeech.includes('what time') || 
+               lowerSpeech.includes('when is') ||
+               lowerSpeech.includes('give me the time') ||
+               lowerSpeech.includes('appointment time') ||
+               lowerSpeech.includes('time is my')) {
+      requestType = 'time';
+    }
+
+    // Handle appointment-related requests
     if (lowerSpeech.includes('appointment') || 
         lowerSpeech.includes('book') || 
         lowerSpeech.includes('schedule') || 
@@ -396,43 +485,35 @@ fastify.post("/handle-speech", async (req, reply) => {
         lowerSpeech.includes('look') ||
         lowerSpeech.includes('check') ||
         lowerSpeech.includes('find') ||
-        lowerSpeech.includes('have any')) {
+        lowerSpeech.includes('have any') ||
+        lowerSpeech.includes('time') ||
+        lowerSpeech.includes('when')) {
       
-      fastify.log.info({ phone: fromNumber }, "Appointment request detected - calling Airtable");
+      fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
       
       const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
         phone: fromNumber
-      });
+      }, requestType);
       
       if (appointmentResult.handled) {
         response.say(appointmentResult.speech);
         handled = true;
-      }
-    }
-
-    // Handle specific "I need an appointment" requests
-    if (!handled && (lowerSpeech.includes('need an appointment') || 
-                     lowerSpeech.includes('need appointment') ||
-                     lowerSpeech.includes('want an appointment') ||
-                     lowerSpeech.includes('want appointment'))) {
-      
-      const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url || "our online booking system";
-      const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site || "";
-      
-      let appointmentResponse = "To schedule an appointment, please visit our service portal to get started with a quote.";
-      
-      if (bookingSite) {
-        appointmentResponse += " I can text you the link to make it easier.";
-        // Send booking links via SMS
-        const links = [bookingUrl];
-        if (bookingSite !== bookingUrl) {
-          links.push(bookingSite);
+        
+        // If they need booking info, potentially send links
+        if (appointmentResult.data?.needsBooking) {
+          const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+          const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+          
+          if (bookingUrl) {
+            const links = [bookingUrl];
+            if (bookingSite && bookingSite !== bookingUrl) {
+              links.push(bookingSite);
+            }
+            await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+            response.say(" I'm texting you the booking links now.");
+          }
         }
-        await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
       }
-      
-      response.say(appointmentResponse);
-      handled = true;
     }
 
     // If not appointment request, use OpenAI
