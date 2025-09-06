@@ -48,9 +48,30 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant) {
   if (!links.length || !tenant?.voice_config?.send_links_via_sms) return;
   
   try {
-    const message = links.length === 1 
-      ? `Here's the link we mentioned: ${links[0]}`
-      : `Here are the links we mentioned:\n${links.map((link, i) => `${i + 1}. ${link}`).join('\n')}`;
+    let message = "";
+    
+    if (links.length === 1) {
+      // Single link - determine what type it is
+      const link = links[0];
+      if (link.includes('directions')) {
+        message = `Here are the detailed directions to our door: ${link}`;
+      } else if (link.includes('instagram')) {
+        message = `Follow us on Instagram: ${link}`;
+      } else if (link.includes('locrepair.com') && !link.includes('service_portal')) {
+        message = `Visit our website for language support chatbot: ${link}`;
+      } else {
+        message = `Here's the link we mentioned: ${link}`;
+      }
+    } else {
+      // Multiple links
+      message = `Here are the links we mentioned:\n${links.map((link, i) => {
+        if (link.includes('service_portal')) return `${i + 1}. Service Portal: ${link}`;
+        if (link.includes('directions')) return `${i + 1}. Directions: ${link}`;
+        if (link.includes('instagram')) return `${i + 1}. Instagram: ${link}`;
+        if (link.includes('locrepair.com')) return `${i + 1}. Website (Language Support): ${link}`;
+        return `${i + 1}. ${link}`;
+      }).join('\n')}`;
+    }
     
     await twilioClient.messages.create({
       body: message,
@@ -58,7 +79,7 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant) {
       to: fromNumber
     });
     
-    fastify.log.info({ fromNumber, linkCount: links.length }, "SMS with links sent successfully");
+    fastify.log.info({ fromNumber, linkCount: links.length, messageType: 'links' }, "SMS with links sent successfully");
   } catch (err) {
     fastify.log.error({ err, fromNumber }, "Failed to send SMS with links");
   }
@@ -194,6 +215,9 @@ CRITICAL INSTRUCTIONS:
 - Address payment security concerns by mentioning in-person deposit options
 - Always offer to text helpful links and directions
 - Acknowledge when clients are running late and inform them Yesha is notified
+- When providing address, always say the full street address clearly
+- For non-English speakers, offer callback options or texting for translation help
+- When texting links, always mention what type of link you're sending
 
 Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
@@ -463,8 +487,109 @@ fastify.post("/handle-speech", async (req, reply) => {
 
     // Handle specific scenarios first
     
+    // Multiple language support
+    if (lowerSpeech.includes('español') || lowerSpeech.includes('spanish') || 
+        lowerSpeech.includes('habla español') || lowerSpeech.includes('hablas español') ||
+        lowerSpeech.includes('en español')) {
+      response.say("Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Le envío el enlace por mensaje de texto ahora.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      handled = true;
+    }
+    else if (lowerSpeech.includes('french') || lowerSpeech.includes('français') ||
+             lowerSpeech.includes('parlez français') || lowerSpeech.includes('en français')) {
+      response.say("Pour le support en français, vous pouvez utiliser notre chat bot sur notre site web. Je vous envoie le lien par SMS maintenant.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      handled = true;
+    }
+    else if (lowerSpeech.includes('arabic') || lowerSpeech.includes('عربي') ||
+             lowerSpeech.includes('تتكلم عربي')) {
+      response.say("للدعم باللغة العربية، يمكنك استخدام روبوت الدردشة على موقعنا الإلكتروني. سأرسل لك الرابط عبر رسالة نصية الآن.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      handled = true;
+    }
+    else if (lowerSpeech.includes('no english') || lowerSpeech.includes("don't speak english") ||
+             lowerSpeech.includes('other language') || lowerSpeech.includes('translate')) {
+      response.say("For language support, please use our chat bot on our website. I'm texting you the link now where you can get help in your language.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      handled = true;
+    }
+    
+    // Address/location requests
+    else if (lowerSpeech.includes('address') || lowerSpeech.includes('location') ||
+             lowerSpeech.includes('where are you') || lowerSpeech.includes('where located') ||
+             lowerSpeech.includes('how to get there') || lowerSpeech.includes('where is')) {
+      const address = tenant?.address || "25240 Lahser Road, Suite 9, Southfield, Michigan 48033";
+      response.say(`We're located at ${address}. I'm texting you the address and detailed directions now.`);
+      
+      const addressLinks = [tenant?.contact?.directions_url || "https://www.locrepair.com/directions-and-appointment-info"];
+      await sendLinksViaSMS(fromNumber, toNumber, addressLinks, tenant);
+      handled = true;
+    }
+    
+    // Website/Instagram requests
+    else if (lowerSpeech.includes('website') || lowerSpeech.includes('web site') ||
+             lowerSpeech.includes('online') || lowerSpeech.includes('url')) {
+      response.say("I'm texting you our website link now so you can easily access it.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      handled = true;
+    }
+    
+    else if (lowerSpeech.includes('instagram') || lowerSpeech.includes('insta') ||
+             lowerSpeech.includes('social media')) {
+      response.say("I'm texting you our Instagram link now.");
+      const instaLinks = [tenant?.contact?.instagram_url || "https://www.instagram.com/locrepairexpert"];
+      await sendLinksViaSMS(fromNumber, toNumber, instaLinks, tenant);
+      handled = true;
+    }
+    
+    // Emergency/Urgent requests
+    else if (lowerSpeech.includes('emergency') || lowerSpeech.includes('urgent') ||
+             lowerSpeech.includes('asap') || lowerSpeech.includes('right now')) {
+      response.say("For urgent appointment needs, text URGENT to 313-455-LOCS and we'll prioritize your request.");
+      handled = true;
+    }
+    
+    // Combination requests (appointment + pricing)
+    else if ((lowerSpeech.includes('appointment') || lowerSpeech.includes('book') || lowerSpeech.includes('schedule')) &&
+        (lowerSpeech.includes('price') || lowerSpeech.includes('cost') || lowerSpeech.includes('pricing') || lowerSpeech.includes('how much'))) {
+      
+      // First handle appointment lookup
+      const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+        phone: fromNumber
+      }, 'booking');
+      
+      let combinedResponse = "";
+      if (appointmentResult.handled) {
+        combinedResponse = appointmentResult.speech + " ";
+      }
+      
+      // Add pricing information
+      combinedResponse += "Our pricing is quote-based since everyone's needs are different. I'm texting you our service portal where you can get personalized pricing.";
+      
+      response.say(combinedResponse);
+      
+      // Send booking links
+      const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+      const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+      
+      if (bookingUrl) {
+        const links = [bookingUrl];
+        if (bookingSite && bookingSite !== bookingUrl) {
+          links.push(bookingSite);
+        }
+        await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+      }
+      
+      handled = true;
+    }
+    
     // Running late notification
-    if (lowerSpeech.includes('running late') || 
+    else if (lowerSpeech.includes('running late') || 
         lowerSpeech.includes('running behind') ||
         lowerSpeech.includes('late for') ||
         (lowerSpeech.includes('late') && lowerSpeech.includes('appointment'))) {
@@ -535,56 +660,77 @@ fastify.post("/handle-speech", async (req, reply) => {
     let requestType = 'lookup'; // default
     
     if (!handled) {
-      if (lowerSpeech.includes('need an appointment') || 
-          lowerSpeech.includes('need appointment') ||
-          lowerSpeech.includes('want an appointment') ||
-          lowerSpeech.includes('want appointment') ||
-          lowerSpeech.includes('book') ||
-          lowerSpeech.includes('schedule')) {
-        requestType = 'booking';
-      } else if (lowerSpeech.includes('what time') || 
-                 lowerSpeech.includes('when is') ||
-                 lowerSpeech.includes('give me the time') ||
-                 lowerSpeech.includes('appointment time') ||
-                 lowerSpeech.includes('time is my')) {
-        requestType = 'time';
+      // Check for pricing-only requests
+      if ((lowerSpeech.includes('price') || lowerSpeech.includes('cost') || lowerSpeech.includes('pricing') || lowerSpeech.includes('how much')) &&
+          !lowerSpeech.includes('appointment') && !lowerSpeech.includes('book') && !lowerSpeech.includes('schedule')) {
+        response.say("Our pricing is quote-based since everyone's needs are different. I'm texting you our service portal where you can get personalized pricing for your specific loc needs.");
+        
+        const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+        const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+        
+        if (bookingUrl) {
+          const links = [bookingUrl];
+          if (bookingSite && bookingSite !== bookingUrl) {
+            links.push(bookingSite);
+          }
+          await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+        }
+        
+        handled = true;
       }
+      
+      if (!handled) {
+        if (lowerSpeech.includes('need an appointment') || 
+            lowerSpeech.includes('need appointment') ||
+            lowerSpeech.includes('want an appointment') ||
+            lowerSpeech.includes('want appointment') ||
+            lowerSpeech.includes('book') ||
+            lowerSpeech.includes('schedule')) {
+          requestType = 'booking';
+        } else if (lowerSpeech.includes('what time') || 
+                   lowerSpeech.includes('when is') ||
+                   lowerSpeech.includes('give me the time') ||
+                   lowerSpeech.includes('appointment time') ||
+                   lowerSpeech.includes('time is my')) {
+          requestType = 'time';
+        }
 
-      // Handle appointment-related requests
-      if (lowerSpeech.includes('appointment') || 
-          lowerSpeech.includes('book') || 
-          lowerSpeech.includes('schedule') || 
-          lowerSpeech.includes('cancel') || 
-          lowerSpeech.includes('reschedule') ||
-          lowerSpeech.includes('look') ||
-          lowerSpeech.includes('check') ||
-          lowerSpeech.includes('find') ||
-          lowerSpeech.includes('have any') ||
-          lowerSpeech.includes('time') ||
-          lowerSpeech.includes('when')) {
-        
-        fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
-        
-        const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
-          phone: fromNumber
-        }, requestType);
-        
-        if (appointmentResult.handled) {
-          response.say(appointmentResult.speech);
-          handled = true;
+        // Handle appointment-related requests
+        if (lowerSpeech.includes('appointment') || 
+            lowerSpeech.includes('book') || 
+            lowerSpeech.includes('schedule') || 
+            lowerSpeech.includes('cancel') || 
+            lowerSpeech.includes('reschedule') ||
+            lowerSpeech.includes('look') ||
+            lowerSpeech.includes('check') ||
+            lowerSpeech.includes('find') ||
+            lowerSpeech.includes('have any') ||
+            lowerSpeech.includes('time') ||
+            lowerSpeech.includes('when')) {
           
-          // If they need booking info, potentially send links
-          if (appointmentResult.data?.needsBooking) {
-            const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
-            const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+          fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
+          
+          const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+            phone: fromNumber
+          }, requestType);
+          
+          if (appointmentResult.handled) {
+            response.say(appointmentResult.speech);
+            handled = true;
             
-            if (bookingUrl) {
-              const links = [bookingUrl];
-              if (bookingSite && bookingSite !== bookingUrl) {
-                links.push(bookingSite);
+            // If they need booking info, potentially send links
+            if (appointmentResult.data?.needsBooking) {
+              const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+              const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+              
+              if (bookingUrl) {
+                const links = [bookingUrl];
+                if (bookingSite && bookingSite !== bookingUrl) {
+                  links.push(bookingSite);
+                }
+                await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+                response.say(" I'm texting you the booking links now.");
               }
-              await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
-              response.say(" I'm texting you the booking links now.");
             }
           }
         }
