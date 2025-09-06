@@ -15,7 +15,7 @@
     "instagram_handle": "@locrepairexpert",
     "instagram_url": "https://www.instagram.com/locrepairexpert",
     "directions_url": "https://www.locrepair.com/directions-and-appointment-info",
-    "review_url": "https://g.page/r/CYyyinc_ntKpEAE/review"
+    "review_url": "https://g.page/r/CYourGoogleReviewLinkHere/review"
   },
   
   "hours": {
@@ -168,6 +168,18 @@
     {
       "q": "Can I get an appointment by a certain date?",
       "a": "We book within 30 days from today. With your quote you should receive a booking link - check your spam folder. If you need the portal again, text PORTAL to 313-455-5627."
+    },
+    {
+      "q": "What's your address?",
+      "a": "We're located at 25240 Lahser Road, Suite 9, Southfield, Michigan 48033. I can text you directions and the address."
+    },
+    {
+      "q": "Do you speak Spanish?",
+      "a": "Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Le envío el enlace por mensaje de texto."
+    },
+    {
+      "q": "Parlez-vous français?",
+      "a": "Pour le support en français, vous pouvez utiliser notre chat bot sur notre site web. Je vous envoie le lien par SMS."
     }
   ],
   
