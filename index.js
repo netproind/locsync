@@ -223,14 +223,6 @@ CRITICAL INSTRUCTIONS:
 - DO NOT repeat or rephrase the customer's question back to them
 - Answer directly and naturally
 - Be conversational and helpful
-- For appointment requests, guide them to the service portal and offer to text links
-- Never tell someone to just "visit our online system" and hang up
-- Address payment security concerns by mentioning in-person deposit options
-- Always offer to text helpful links and directions
-- Acknowledge when clients are running late and inform them Yesha is notified
-- When providing address, always say the full street address clearly
-- For non-English speakers, offer callback options or texting for translation help
-- When texting links, always mention what type of link you're sending
 
 Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
@@ -773,8 +765,24 @@ fastify.post("/handle-speech", async (req, reply) => {
         }
         
         if (!handled) {
+          // Check for date-specific appointment management
+          if ((lowerSpeech.includes('manage') || lowerSpeech.includes('cancel') || lowerSpeech.includes('reschedule')) &&
+              (lowerSpeech.includes('monday') || lowerSpeech.includes('tuesday') || lowerSpeech.includes('wednesday') || 
+               lowerSpeech.includes('thursday') || lowerSpeech.includes('friday') || lowerSpeech.includes('saturday') || 
+               lowerSpeech.includes('sunday') || lowerSpeech.includes('december') || lowerSpeech.includes('january') ||
+               lowerSpeech.includes('february') || lowerSpeech.includes('march') || lowerSpeech.includes('april') ||
+               lowerSpeech.includes('may') || lowerSpeech.includes('june') || lowerSpeech.includes('july') ||
+               lowerSpeech.includes('august') || lowerSpeech.includes('september') || lowerSpeech.includes('october') ||
+               lowerSpeech.includes('november') || /\b\d{1,2}\b/.test(lowerSpeech))) {
+            
+            response.say("I understand you want to manage a specific appointment. I'm texting you the confirmation link now where you can cancel or reschedule any of your appointments.");
+            const confirmationUrl = tenant?.contact?.confirmation_page || "https://www.locrepair.com/appointment-confirmation";
+            await sendLinksViaSMS(fromNumber, toNumber, [confirmationUrl], tenant);
+            handled = true;
+          }
+          
           // Determine request type
-          if (lowerSpeech.includes('need an appointment') || 
+          else if (lowerSpeech.includes('need an appointment') || 
               lowerSpeech.includes('need appointment') ||
               lowerSpeech.includes('want an appointment') ||
               lowerSpeech.includes('want appointment') ||
@@ -803,7 +811,7 @@ fastify.post("/handle-speech", async (req, reply) => {
           }
 
           // Handle appointment-related requests
-          if (lowerSpeech.includes('appointment') || 
+          if (!handled && (lowerSpeech.includes('appointment') || 
               lowerSpeech.includes('book') || 
               lowerSpeech.includes('schedule') || 
               lowerSpeech.includes('cancel') || 
@@ -819,7 +827,7 @@ fastify.post("/handle-speech", async (req, reply) => {
               lowerSpeech.includes('all') ||
               lowerSpeech.includes('both') ||
               lowerSpeech.includes('second') ||
-              lowerSpeech.includes('other')) {
+              lowerSpeech.includes('other'))) {
             
             fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
             
