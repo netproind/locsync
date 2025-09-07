@@ -57,6 +57,18 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant) {
         message = `Here are the detailed directions to our door: ${link}`;
       } else if (link.includes('instagram')) {
         message = `Follow us on Instagram: ${link}`;
+      } else if (link.includes('wick-maintenance')) {
+        message = `Wick Locs Maintenance Quote: ${link}`;
+      } else if (link.includes('bald-quote')) {
+        message = `Bald Coverage Quote: ${link}`;
+      } else if (link.includes('repair-quote')) {
+        message = `Loc Repair Quote: ${link}`;
+      } else if (link.includes('retwist-quote')) {
+        message = `Starter Locs Quote: ${link}`;
+      } else if (link.includes('micro-sister')) {
+        message = `Sisterlocks Maintenance Quote: ${link}`;
+      } else if (link.includes('appointment-confirmation')) {
+        message = `Manage your appointment here: ${link}`;
       } else if (link.includes('locrepair.com') && !link.includes('service_portal')) {
         message = `Visit our website for language support chatbot: ${link}`;
       } else {
@@ -68,6 +80,7 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant) {
         if (link.includes('service_portal')) return `${i + 1}. Service Portal: ${link}`;
         if (link.includes('directions')) return `${i + 1}. Directions: ${link}`;
         if (link.includes('instagram')) return `${i + 1}. Instagram: ${link}`;
+        if (link.includes('appointment-confirmation')) return `${i + 1}. Appointment Management: ${link}`;
         if (link.includes('locrepair.com')) return `${i + 1}. Website (Language Support): ${link}`;
         return `${i + 1}. ${link}`;
       }).join('\n')}`;
@@ -322,7 +335,7 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
     client_name: record.fields.client_first || 'Client'
   }));
 
-  // Filter for upcoming appointments
+  // Filter for upcoming appointments only
   const now = new Date();
   const upcoming = appointments.filter(apt => {
     if (!apt.date) return true;
@@ -344,19 +357,19 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
     };
   }
 
-  // If no upcoming appointments but they have past ones
+  // If no upcoming appointments (only past ones)
   if (upcoming.length === 0) {
     if (requestType === 'booking') {
       return {
         handled: true,
-        speech: `I see your last appointment has passed. Are you a returning client looking to book another appointment, or do you need a new service quote?`,
-        data: { appointments, needsBooking: true, isReturning: true }
+        speech: `I don't see any upcoming appointments. Are you a returning client looking to book another appointment, or do you need a new service quote?`,
+        data: { appointments: [], needsBooking: true, isReturning: true }
       };
     } else {
       return {
         handled: true,
-        speech: `Your last appointment has already passed. Would you like to schedule a new appointment?`,
-        data: { appointments, needsBooking: true, isReturning: true }
+        speech: `I don't see any upcoming appointments under your number. Would you like to schedule a new appointment?`,
+        data: { appointments: [], needsBooking: true, isReturning: true }
       };
     }
   }
@@ -367,22 +380,57 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
   const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
   
   if (requestType === 'time' || requestType === 'when') {
+    if (upcoming.length === 1) {
+      return {
+        handled: true,
+        speech: `Your ${next.service} appointment is scheduled for ${dateInfo}${timeInfo}.`,
+        data: { appointments: upcoming }
+      };
+    } else {
+      const allAppts = upcoming.map((apt, i) => {
+        const aptTime = apt.time ? ` at ${apt.time}` : '';
+        const aptDate = apt.date ? formatAppointmentDate(apt.date) : '';
+        return `${i + 1}. ${apt.service} on ${aptDate}${aptTime}`;
+      }).join(', ');
+      return {
+        handled: true,
+        speech: `You have ${upcoming.length} upcoming appointments: ${allAppts}. Which one would you like to know about?`,
+        data: { appointments: upcoming }
+      };
+    }
+  }
+
+  // For management requests
+  if (requestType === 'manage' || requestType === 'cancel' || requestType === 'reschedule') {
+    if (upcoming.length === 1) {
+      return {
+        handled: true,
+        speech: `You have an appointment for ${next.service} on ${dateInfo}${timeInfo}. I'm texting you the confirmation link to manage it.`,
+        data: { appointments: upcoming, sendConfirmation: true }
+      };
+    } else {
+      return {
+        handled: true,
+        speech: `You have ${upcoming.length} appointments. Which appointment would you like to manage? Your next is ${next.service} on ${dateInfo}${timeInfo}.`,
+        data: { appointments: upcoming, needsSelection: true }
+      };
+    }
+  }
+
+  // Default lookup
+  if (upcoming.length === 1) {
     return {
       handled: true,
-      speech: `Your ${next.service} appointment is scheduled for ${dateInfo}${timeInfo}.`,
+      speech: `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`,
+      data: { appointments: upcoming }
+    };
+  } else {
+    return {
+      handled: true,
+      speech: `You have ${upcoming.length} upcoming appointments. Your next is ${next.service} on ${dateInfo}${timeInfo}. Would you like details on all appointments or help with a specific one?`,
       data: { appointments: upcoming }
     };
   }
-
-  const speech = upcoming.length === 1 
-    ? `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`
-    : `You have ${upcoming.length} appointments. Your next is ${next.service} on ${dateInfo}${timeInfo}. What would you like to do?`;
-
-  return {
-    handled: true,
-    speech,
-    data: { appointments: upcoming }
-  };
 }
 
 // Helper function to extract time from date string
@@ -487,13 +535,21 @@ fastify.post("/handle-speech", async (req, reply) => {
 
     // Handle specific scenarios first
     
-    // Multiple language support
+    // Multiple language support with better continuation
     if (lowerSpeech.includes('español') || lowerSpeech.includes('spanish') || 
         lowerSpeech.includes('habla español') || lowerSpeech.includes('hablas español') ||
         lowerSpeech.includes('en español')) {
       response.say("Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Le envío el enlace por mensaje de texto ahora.");
       const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
       await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 8,
+        speechTimeout: "auto"
+      });
+      response.say("¿Hay algo más en que pueda ayudarle?");
       handled = true;
     }
     else if (lowerSpeech.includes('french') || lowerSpeech.includes('français') ||
@@ -501,6 +557,14 @@ fastify.post("/handle-speech", async (req, reply) => {
       response.say("Pour le support en français, vous pouvez utiliser notre chat bot sur notre site web. Je vous envoie le lien par SMS maintenant.");
       const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
       await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 8,
+        speechTimeout: "auto"
+      });
+      response.say("Y a-t-il autre chose que je puisse faire pour vous?");
       handled = true;
     }
     else if (lowerSpeech.includes('arabic') || lowerSpeech.includes('عربي') ||
@@ -508,6 +572,14 @@ fastify.post("/handle-speech", async (req, reply) => {
       response.say("للدعم باللغة العربية، يمكنك استخدام روبوت الدردشة على موقعنا الإلكتروني. سأرسل لك الرابط عبر رسالة نصية الآن.");
       const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
       await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant);
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 8,
+        speechTimeout: "auto"
+      });
+      response.say("هل هناك شيء آخر يمكنني مساعدتك فيه؟");
       handled = true;
     }
     else if (lowerSpeech.includes('no english') || lowerSpeech.includes("don't speak english") ||
@@ -656,86 +728,102 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
-    // Determine the type of request for existing appointment logic
-    let requestType = 'lookup'; // default
-    
-    if (!handled) {
-      // Check for pricing-only requests
-      if ((lowerSpeech.includes('price') || lowerSpeech.includes('cost') || lowerSpeech.includes('pricing') || lowerSpeech.includes('how much')) &&
-          !lowerSpeech.includes('appointment') && !lowerSpeech.includes('book') && !lowerSpeech.includes('schedule')) {
-        response.say("Our pricing is quote-based since everyone's needs are different. I'm texting you our service portal where you can get personalized pricing for your specific loc needs.");
-        
-        const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
-        const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
-        
-        if (bookingUrl) {
-          const links = [bookingUrl];
-          if (bookingSite && bookingSite !== bookingUrl) {
-            links.push(bookingSite);
-          }
-          await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
-        }
-        
-        handled = true;
-      }
+      // Determine the type of request for existing appointment logic
+      let requestType = 'lookup'; // default
       
       if (!handled) {
-        if (lowerSpeech.includes('need an appointment') || 
-            lowerSpeech.includes('need appointment') ||
-            lowerSpeech.includes('want an appointment') ||
-            lowerSpeech.includes('want appointment') ||
-            lowerSpeech.includes('book') ||
-            lowerSpeech.includes('schedule')) {
-          requestType = 'booking';
-        } else if (lowerSpeech.includes('what time') || 
-                   lowerSpeech.includes('when is') ||
-                   lowerSpeech.includes('give me the time') ||
-                   lowerSpeech.includes('appointment time') ||
-                   lowerSpeech.includes('time is my')) {
-          requestType = 'time';
+        // Check for pricing-only requests
+        if ((lowerSpeech.includes('price') || lowerSpeech.includes('cost') || lowerSpeech.includes('pricing') || lowerSpeech.includes('how much')) &&
+            !lowerSpeech.includes('appointment') && !lowerSpeech.includes('book') && !lowerSpeech.includes('schedule')) {
+          response.say("Our pricing is quote-based since everyone's needs are different. I'm texting you our service portal where you can get personalized pricing for your specific loc needs.");
+          
+          const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+          const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+          
+          if (bookingUrl) {
+            const links = [bookingUrl];
+            if (bookingSite && bookingSite !== bookingUrl) {
+              links.push(bookingSite);
+            }
+            await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+          }
+          
+          handled = true;
         }
+        
+        if (!handled) {
+          // Determine request type
+          if (lowerSpeech.includes('need an appointment') || 
+              lowerSpeech.includes('need appointment') ||
+              lowerSpeech.includes('want an appointment') ||
+              lowerSpeech.includes('want appointment') ||
+              lowerSpeech.includes('book') ||
+              lowerSpeech.includes('schedule')) {
+            requestType = 'booking';
+          } else if (lowerSpeech.includes('what time') || 
+                     lowerSpeech.includes('when is') ||
+                     lowerSpeech.includes('give me the time') ||
+                     lowerSpeech.includes('appointment time') ||
+                     lowerSpeech.includes('time is my')) {
+            requestType = 'time';
+          } else if (lowerSpeech.includes('manage') || 
+                     lowerSpeech.includes('change') ||
+                     lowerSpeech.includes('modify')) {
+            requestType = 'manage';
+          } else if (lowerSpeech.includes('cancel')) {
+            requestType = 'cancel';
+          } else if (lowerSpeech.includes('reschedule')) {
+            requestType = 'reschedule';
+          }
 
-        // Handle appointment-related requests
-        if (lowerSpeech.includes('appointment') || 
-            lowerSpeech.includes('book') || 
-            lowerSpeech.includes('schedule') || 
-            lowerSpeech.includes('cancel') || 
-            lowerSpeech.includes('reschedule') ||
-            lowerSpeech.includes('look') ||
-            lowerSpeech.includes('check') ||
-            lowerSpeech.includes('find') ||
-            lowerSpeech.includes('have any') ||
-            lowerSpeech.includes('time') ||
-            lowerSpeech.includes('when')) {
-          
-          fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
-          
-          const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
-            phone: fromNumber
-          }, requestType);
-          
-          if (appointmentResult.handled) {
-            response.say(appointmentResult.speech);
-            handled = true;
+          // Handle appointment-related requests
+          if (lowerSpeech.includes('appointment') || 
+              lowerSpeech.includes('book') || 
+              lowerSpeech.includes('schedule') || 
+              lowerSpeech.includes('cancel') || 
+              lowerSpeech.includes('reschedule') ||
+              lowerSpeech.includes('look') ||
+              lowerSpeech.includes('check') ||
+              lowerSpeech.includes('find') ||
+              lowerSpeech.includes('have any') ||
+              lowerSpeech.includes('time') ||
+              lowerSpeech.includes('when') ||
+              lowerSpeech.includes('manage')) {
             
-            // If they need booking info, potentially send links
-            if (appointmentResult.data?.needsBooking) {
-              const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
-              const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+            fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
+            
+            const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+              phone: fromNumber
+            }, requestType);
+            
+            if (appointmentResult.handled) {
+              response.say(appointmentResult.speech);
+              handled = true;
               
-              if (bookingUrl) {
-                const links = [bookingUrl];
-                if (bookingSite && bookingSite !== bookingUrl) {
-                  links.push(bookingSite);
+              // Send confirmation link for management requests
+              if (appointmentResult.data?.sendConfirmation) {
+                const confirmationUrl = tenant?.contact?.confirmation_page || "https://www.locrepair.com/appointment-confirmation";
+                await sendLinksViaSMS(fromNumber, toNumber, [confirmationUrl], tenant);
+              }
+              
+              // If they need booking info, send links
+              if (appointmentResult.data?.needsBooking) {
+                const bookingUrl = tenant?.booking?.main_url || tenant?.booking_url;
+                const bookingSite = tenant?.booking?.booking_site || tenant?.booking?.square_site || tenant?.square_site;
+                
+                if (bookingUrl) {
+                  const links = [bookingUrl];
+                  if (bookingSite && bookingSite !== bookingUrl) {
+                    links.push(bookingSite);
+                  }
+                  await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
+                  response.say(" I'm texting you the booking links now.");
                 }
-                await sendLinksViaSMS(fromNumber, toNumber, links, tenant);
-                response.say(" I'm texting you the booking links now.");
               }
             }
           }
         }
       }
-    }
 
     // If not appointment request, use OpenAI
     if (!handled) {
