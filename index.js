@@ -374,27 +374,28 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
     }
   }
 
-  // For lookup requests with upcoming appointments
-  const next = upcoming[0];
-  const timeInfo = next.time ? ` at ${next.time}` : '';
-  const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
-  
+  // For time requests - handle multiple appointments
   if (requestType === 'time' || requestType === 'when') {
     if (upcoming.length === 1) {
+      const next = upcoming[0];
+      const timeInfo = next.time ? ` at ${next.time}` : '';
+      const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
       return {
         handled: true,
         speech: `Your ${next.service} appointment is scheduled for ${dateInfo}${timeInfo}.`,
         data: { appointments: upcoming }
       };
     } else {
+      // Multiple appointments - list all with times
       const allAppts = upcoming.map((apt, i) => {
         const aptTime = apt.time ? ` at ${apt.time}` : '';
         const aptDate = apt.date ? formatAppointmentDate(apt.date) : '';
-        return `${i + 1}. ${apt.service} on ${aptDate}${aptTime}`;
-      }).join(', ');
+        return `${apt.service} on ${aptDate}${aptTime}`;
+      });
+      
       return {
         handled: true,
-        speech: `You have ${upcoming.length} upcoming appointments: ${allAppts}. Which one would you like to know about?`,
+        speech: `You have ${upcoming.length} upcoming appointments: ${allAppts.join(', and ')}. Which appointment did you want to know about?`,
         data: { appointments: upcoming }
       };
     }
@@ -403,31 +404,51 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
   // For management requests
   if (requestType === 'manage' || requestType === 'cancel' || requestType === 'reschedule') {
     if (upcoming.length === 1) {
+      const next = upcoming[0];
+      const timeInfo = next.time ? ` at ${next.time}` : '';
+      const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
       return {
         handled: true,
         speech: `You have an appointment for ${next.service} on ${dateInfo}${timeInfo}. I'm texting you the confirmation link to manage it.`,
         data: { appointments: upcoming, sendConfirmation: true }
       };
     } else {
+      // Multiple appointments - ask which one
+      const allAppts = upcoming.map((apt, i) => {
+        const aptTime = apt.time ? ` at ${apt.time}` : '';
+        const aptDate = apt.date ? formatAppointmentDate(apt.date) : '';
+        return `${i + 1}. ${apt.service} on ${aptDate}${aptTime}`;
+      });
+      
       return {
         handled: true,
-        speech: `You have ${upcoming.length} appointments. Which appointment would you like to manage? Your next is ${next.service} on ${dateInfo}${timeInfo}.`,
-        data: { appointments: upcoming, needsSelection: true }
+        speech: `You have ${upcoming.length} appointments: ${allAppts.join(', ')}. Which appointment would you like to manage? I'm texting you the confirmation link to help you manage any of them.`,
+        data: { appointments: upcoming, sendConfirmation: true, needsSelection: true }
       };
     }
   }
 
-  // Default lookup
+  // Default lookup - handle multiple appointments properly
   if (upcoming.length === 1) {
+    const next = upcoming[0];
+    const timeInfo = next.time ? ` at ${next.time}` : '';
+    const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
     return {
       handled: true,
       speech: `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`,
       data: { appointments: upcoming }
     };
   } else {
+    // Multiple appointments - list all appointments with full details
+    const allAppts = upcoming.map((apt, i) => {
+      const aptTime = apt.time ? ` at ${apt.time}` : '';
+      const aptDate = apt.date ? formatAppointmentDate(apt.date) : '';
+      return `${i + 1}. ${apt.service} on ${aptDate}${aptTime}`;
+    });
+    
     return {
       handled: true,
-      speech: `You have ${upcoming.length} upcoming appointments. Your next is ${next.service} on ${dateInfo}${timeInfo}. Would you like details on all appointments or help with a specific one?`,
+      speech: `You have ${upcoming.length} upcoming appointments: ${allAppts.join(', and ')}. Which appointment would you like help with, or would you like to manage all of them?`,
       data: { appointments: upcoming }
     };
   }
@@ -764,7 +785,12 @@ fastify.post("/handle-speech", async (req, reply) => {
                      lowerSpeech.includes('when is') ||
                      lowerSpeech.includes('give me the time') ||
                      lowerSpeech.includes('appointment time') ||
-                     lowerSpeech.includes('time is my')) {
+                     lowerSpeech.includes('time is my') ||
+                     lowerSpeech.includes('list all') ||
+                     lowerSpeech.includes('all appointments') ||
+                     lowerSpeech.includes('both appointments') ||
+                     lowerSpeech.includes('second appointment') ||
+                     lowerSpeech.includes('other appointment')) {
             requestType = 'time';
           } else if (lowerSpeech.includes('manage') || 
                      lowerSpeech.includes('change') ||
@@ -788,7 +814,12 @@ fastify.post("/handle-speech", async (req, reply) => {
               lowerSpeech.includes('have any') ||
               lowerSpeech.includes('time') ||
               lowerSpeech.includes('when') ||
-              lowerSpeech.includes('manage')) {
+              lowerSpeech.includes('manage') ||
+              lowerSpeech.includes('list') ||
+              lowerSpeech.includes('all') ||
+              lowerSpeech.includes('both') ||
+              lowerSpeech.includes('second') ||
+              lowerSpeech.includes('other')) {
             
             fastify.log.info({ phone: fromNumber, requestType }, "Appointment request detected - calling Airtable");
             
