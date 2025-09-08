@@ -15,7 +15,7 @@
     "instagram_handle": "@locrepairexpert",
     "instagram_url": "https://www.instagram.com/locrepairexpert",
     "directions_url": "https://www.locrepair.com/directions-and-appointment-info",
-    "review_url": "https://g.page/r/CYourGoogleReviewLinkHere/review",
+    "review_url": "https://g.page/r/CYyyinc_ntKpEAE/review",
     "appointment_lookup": "https://www.locrepair.com/appointment-lookup.html"
   },
   
@@ -40,7 +40,15 @@
     "booking_site": "https://locrepair.as.me",
     "consultation_url": "https://locrepair.as.me/?appointmentType=83061405",
     "requires_quote": true,
-    "consultation_fee": 25
+    "consultation_fee": 25,
+    "maintenance_links": {
+      "retwist": "https://locrepair.as.me/?appointmentType=83058786",
+      "wick": "https://locrepair.as.me/?appointmentType=83060814",
+      "interlock": "https://locrepair.as.me/?appointmentType=83060708",
+      "sisterlock": "https://locrepair.as.me/?appointmentType=83060793",
+      "crochet": "https://locrepair.as.me/?appointmentType=83060747",
+      "bald_coverage": "https://locrepair.as.me/?appointmentType=83060933"
+    }
   },
   
   "services": {
@@ -137,7 +145,7 @@
   "canonical_answers": [
     {
       "q": "How can I get an appointment?",
-      "a": "We serve by appointment only. Start with a quote at our service portal. I can text you the link if you'd like."
+      "a": "Are you a new client or a returning client? New clients need quotes from our service portal, while returning clients can book maintenance appointments directly."
     },
     {
       "q": "Do you do wick locs?",
@@ -153,7 +161,7 @@
     },
     {
       "q": "I need an appointment",
-      "a": "I'd be happy to help you get scheduled. Please visit our service portal to start with a quote, and I can text you the link to make it easier."
+      "a": "Are you a new client or a returning client? This helps me get you to the right booking process."
     },
     {
       "q": "Can I pay my deposit in person?",
