@@ -810,6 +810,289 @@ fastify.post("/handle-speech", async (req, reply) => {
     else if (lowerSpeech.includes('crochet') && lowerSpeech.includes('maintenance')) {
       response.say("Perfect! I'm texting you the direct booking link for your crochet roots maintenance appointment.");
       const bookingLink = getMaintenanceBookingLink('crochet', tenant);
+// ---------------- ROUTES ----------------
+fastify.get("/", async () => {
+  return { 
+    status: "ok", 
+    service: "LocSync Voice Agent - Multi-Tenant",
+    tenants: Object.keys(TENANTS).length 
+  };
+});
+
+fastify.get("/health", async () => {
+  return { status: "healthy", timestamp: new Date().toISOString() };
+});
+
+// Incoming call handler
+fastify.post("/incoming-call", async (req, reply) => {
+  const toNumber = (req.body?.To || "").trim();
+  const fromNumber = (req.body?.From || "").trim();
+  const tenant = getTenantByToNumber(toNumber);
+
+  fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
+
+  const response = new twiml();
+  const greeting = tenant?.voice_config?.greeting_tts || tenant?.greeting_tts || 
+    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
+
+  response.say(greeting);
+  response.gather({
+    input: "speech",
+    action: "/handle-speech",
+    method: "POST",
+    timeout: 10,
+    speechTimeout: "auto"
+  });
+
+  reply.type("text/xml").send(response.toString());
+});
+
+// Handle speech input - ENHANCED with new appointment booking flow
+fastify.post("/handle-speech", async (req, reply) => {
+  const speechResult = req.body?.SpeechResult?.trim() || "";
+  const toNumber = (req.body?.To || "").trim();
+  const fromNumber = (req.body?.From || "").trim();
+  const tenant = getTenantByToNumber(toNumber);
+
+  fastify.log.info({ 
+    speech: speechResult, 
+    tenant: tenant?.tenant_id,
+    hasAirtable: !!(tenant?.airtable_base_id && tenant?.airtable_table_name)
+  }, "Processing speech");
+
+  const response = new twiml();
+
+  if (!speechResult) {
+    response.say("I didn't catch that clearly. Could you please repeat what you need? I'm still here to help.");
+    response.gather({
+      input: "speech",
+      action: "/handle-speech",
+      method: "POST",
+      timeout: 10,
+      speechTimeout: "auto"
+    });
+    response.say("I'm waiting for your response.");
+    reply.type("text/xml").send(response.toString());
+    return;
+  }
+
+  try {
+    const lowerSpeech = speechResult.toLowerCase();
+    let handled = false;
+
+    // Enhanced multilingual support with proper continuation
+    if (lowerSpeech.includes('español') || lowerSpeech.includes('spanish') || 
+        lowerSpeech.includes('habla español') || lowerSpeech.includes('hablas español') ||
+        lowerSpeech.includes('en español') || lowerSpeech.includes('no hablo inglés') ||
+        lowerSpeech.includes('no hablo ingles')) {
+      response.say("Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Está en la esquina inferior derecha. Le envío el enlace por mensaje de texto ahora.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("¿Hay algo más en que pueda ayudarle?");
+      handled = true;
+    }
+    else if (lowerSpeech.includes('french') || lowerSpeech.includes('français') ||
+             lowerSpeech.includes('parlez français') || lowerSpeech.includes('en français') ||
+             lowerSpeech.includes('parlez-vous français') || lowerSpeech.includes('je ne parle pas anglais')) {
+      response.say("Pour le support en français, vous pouvez utiliser notre chat bot sur notre site web. Il est dans le coin inférieur droit. Je vous envoie le lien par SMS maintenant.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Y a-t-il autre chose que je puisse faire pour vous?");
+      handled = true;
+    }
+    else if (lowerSpeech.includes('german') || lowerSpeech.includes('deutsch') ||
+             lowerSpeech.includes('sprechen sie deutsch') || lowerSpeech.includes('auf deutsch') ||
+             lowerSpeech.includes('ich spreche kein englisch')) {
+      response.say("Für deutsche Unterstützung können Sie unseren Chat-Bot auf unserer Website verwenden. Er befindet sich in der unteren rechten Ecke. Ich sende Ihnen jetzt den Link per SMS.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Gibt es noch etwas, womit ich Ihnen helfen kann?");
+      handled = true;
+    }
+    else if (lowerSpeech.includes('arabic') || lowerSpeech.includes('عربي') ||
+             lowerSpeech.includes('تتكلم عربي') || lowerSpeech.includes('العربية')) {
+      response.say("للدعم باللغة العربية، يمكنك استخدام روبوت الدردشة على موقعنا الإلكتروني في الزاوية اليمنى السفلى. سأرسل لك الرابط عبر رسالة نصية الآن.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("هل هناك شيء آخر يمكنني مساعدتك فيه؟");
+      handled = true;
+    }
+    else if (lowerSpeech.includes('no english') || lowerSpeech.includes("don't speak english") ||
+             lowerSpeech.includes('other language') || lowerSpeech.includes('translate')) {
+      response.say("For language support, please use our chat bot on our website in the bottom right corner. I'm texting you the link now where you can get help in your language.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    // Website/Instagram requests
+    else if (lowerSpeech.includes('website') || lowerSpeech.includes('web site') ||
+             lowerSpeech.includes('online') || lowerSpeech.includes('url')) {
+      response.say("I'm texting you our website link now so you can easily access it.");
+      const websiteLinks = [tenant?.contact?.website || "https://www.locrepair.com"];
+      await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    else if (lowerSpeech.includes('instagram') || lowerSpeech.includes('insta') ||
+             lowerSpeech.includes('social media')) {
+      response.say("I'm texting you our Instagram link now.");
+      const instaLinks = [tenant?.contact?.instagram_url || "https://www.instagram.com/locrepairexpert"];
+      await sendLinksViaSMS(fromNumber, toNumber, instaLinks, tenant, 'instagram');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    // NEW APPOINTMENT BOOKING FLOW - Enhanced to check client status via Airtable
+    else if (lowerSpeech.includes('need an appointment') || lowerSpeech.includes('need appointment') ||
+             lowerSpeech.includes('want an appointment') || lowerSpeech.includes('want appointment') ||
+             lowerSpeech.includes('book an appointment') || lowerSpeech.includes('book appointment') ||
+             lowerSpeech.includes('schedule an appointment') || lowerSpeech.includes('schedule appointment') ||
+             lowerSpeech.includes('looking for slot') || lowerSpeech.includes('slot availability') ||
+             lowerSpeech.includes('slots available') || lowerSpeech.includes('availability')) {
+      
+      // Check if they're new or returning by looking up appointments
+      const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+        phone: fromNumber
+      }, 'new_appointment');
+      
+      if (appointmentResult.handled) {
+        response.say(appointmentResult.speech);
+        
+        // Handle new client - send service portal
+        if (appointmentResult.data?.isNewClient) {
+          const servicePortalLink = tenant?.booking?.main_url || "https://www.locrepair.com/service_portal";
+          await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
+        }
+        
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        response.say("Is there anything else I can help you with?");
+        handled = true;
+      }
+    }
+    
+    // Handle returning client service selection responses - FIXED
+    else if (lowerSpeech.includes('retwist') || lowerSpeech.includes('palm roll')) {
+      response.say("Perfect! I'm texting you the direct booking link for your retwist maintenance appointment.");
+      const bookingLink = getMaintenanceBookingLink('retwist', tenant);
+      await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'retwist_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    else if (lowerSpeech.includes('wick')) {
+      response.say("Perfect! I'm texting you the direct booking link for your wick loc maintenance appointment.");
+      const bookingLink = getMaintenanceBookingLink('wick', tenant);
+      await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'wick_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    else if (lowerSpeech.includes('interlock')) {
+      response.say("Perfect! I'm texting you the direct booking link for your interlock maintenance appointment.");
+      const bookingLink = getMaintenanceBookingLink('interlock', tenant);
+      await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'interlock_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    else if (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('sister lock') || 
+             lowerSpeech.includes('microlock') || lowerSpeech.includes('micro lock')) {
+      response.say("Perfect! I'm texting you the direct booking link for your sisterlock maintenance appointment.");
+      const bookingLink = getMaintenanceBookingLink('sisterlock', tenant);
+      await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'sisterlock_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+    
+    else if (lowerSpeech.includes('crochet')) {
+      response.say("Perfect! I'm texting you the direct booking link for your crochet roots maintenance appointment.");
+      const bookingLink = getMaintenanceBookingLink('crochet', tenant);
       await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'crochet_booking');
       response.gather({
         input: "speech",
@@ -822,7 +1105,7 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
     
-    else if (lowerSpeech.includes('bald coverage') && lowerSpeech.includes('maintenance')) {
+    else if (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot')) {
       response.say("Perfect! I'm texting you the direct booking link for your bald coverage maintenance appointment.");
       const bookingLink = getMaintenanceBookingLink('bald_coverage', tenant);
       await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'bald_coverage_booking');
@@ -867,7 +1150,7 @@ fastify.post("/handle-speech", async (req, reply) => {
       });
       response.say("Which service would you like to book?");
       handled = true;
-      }
+    }
 // Running late notification
     else if (lowerSpeech.includes('running late') || 
         lowerSpeech.includes('running behind') ||
