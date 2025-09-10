@@ -939,6 +939,24 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
+    // Directions request
+if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('address') || 
+                 lowerSpeech.includes('location') || lowerSpeech.includes('where are you') ||
+                 lowerSpeech.includes('how to get there') || lowerSpeech.includes('lost'))) {
+  response.say(`We're located at ${tenant?.address || '25240 Lahser Road, Suite 9, Southfield, Michigan 48033'}. I'm texting you detailed directions to our door now.`);
+  const directionLinks = [tenant?.contact?.directions_url || ""];
+  if (directionLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, directionLinks, tenant, 'directions');
+  response.gather({
+    input: "speech",
+    action: "/handle-speech",
+    method: "POST",
+    timeout: 12,
+    speechTimeout: "auto"
+  });
+  response.say("Is there anything else I can help you with?");
+  handled = true;
+}
+
     // Log final handling status
     fastify.log.info({ handled, lowerSpeech }, "Speech processing complete");
 
