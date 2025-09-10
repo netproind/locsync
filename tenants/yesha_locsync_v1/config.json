@@ -269,16 +269,14 @@
     }
   ],
   
-  "quick_responses": {
-    "walk_in": "We're appointment-only. Text 313-488-4898 for immediate availability.",
-    "pricing": "Our pricing is quote-based since everyone's needs are different. Visit our service portal to start.",
-    "reschedule": "Text RESCHEDULE to 313-455-5627 with your current appointment.",
-    "urgent": "Text URGENT to 313-455-LOCS for priority scheduling.",
-    "deposit_in_person": "Text DEPOSIT to 313-455-5627 to schedule a time to come pay in person.",
-    "portal_access": "Text PORTAL to 313-455-5627 and we'll send the portal to get started.",
-    "directions": "Text DIRECTIONS to 313-455-5627 for detailed directions to our door.",
-    "review": "Text REVIEW to 313-455-5627 to get the link to leave a Google review.",
-    "same_day_cancel": "Text CANCEL to 313-455-LOCS for same day cancellation.",
-    "running_late": "Thanks for the update! Yesha has been informed you're running behind."
-  }
+"quick_responses": {
+  "walk_in": "We're appointment-only. Call us for immediate availability.",
+  "pricing": "Our pricing is quote-based since everyone's needs are different. Visit our service portal to start.",
+  "reschedule": "Call us or use our appointment lookup link to reschedule.",
+  "deposit_in_person": "We offer in-person deposit payment options for security concerns.",
+  "portal_access": "We'll send you our service portal to get started.",
+  "directions": "We're texting you detailed directions to our door.",
+  "review": "We appreciate reviews - we'll send you the link.",
+  "running_late": "Thanks for the update! Yesha has been informed you're running behind."
+}
 }
