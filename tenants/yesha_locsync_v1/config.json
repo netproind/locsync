@@ -1,12 +1,28 @@
 {
+  "salon_type": "pro_plus",
+  "salon_name": "Loc Repair Clinic",
+  "studio_name": "Loc Repair Clinic",
   "loctician_name": "Yesha",
   "experience_years": 17,
+  "base_domain": "locrepair.com",
   "timezone": "America/Detroit",
   "location": "Detroit, Michigan",
   "address": "25240 Lahser Road, Suite 9, Southfield, Michigan 48033",
   
   "airtable_base_id": "app9lztXMFpEO3mkF",
   "airtable_table_name": "Appointments",
+  
+  "advanced_features": {
+    "service_portal": true,
+    "quote_system": true,
+    "new_vs_returning_flow": true,
+    "maintenance_booking_links": true,
+    "bald_coverage": true,
+    "wick_locs": true,
+    "loc_repair": true,
+    "training_program": true,
+    "multilingual_support": true
+  },
   
   "contact": {
     "phone": "313-455-5627",
@@ -35,6 +51,12 @@
     "send_links_via_sms": true
   },
   
+  "service_portal": {
+    "enabled": true,
+    "url": "https://www.locrepair.com/service_portal",
+    "description": "Get personalized quotes for your specific loc needs"
+  },
+  
   "booking": {
     "main_url": "https://www.locrepair.com/service_portal",
     "booking_site": "https://locrepair.as.me",
@@ -49,6 +71,48 @@
       "crochet": "https://locrepair.as.me/?appointmentType=83060747",
       "bald_coverage": "https://locrepair.as.me/?appointmentType=83060933"
     }
+  },
+  
+  "quote_system": {
+    "enabled": true,
+    "force_quotes_before_booking": true,
+    "urls": {
+      "bald_coverage": "https://www.locrepair.com/bald-quote-for-existing-locs/",
+      "wick_maintenance": "https://www.locrepair.com/wick-maintenance-quote/",
+      "loc_attachment": "https://www.locrepair.com/loc-reattachment-quote/",
+      "extensions": "https://www.locrepair.com/permanent-loc-extensions-quote/",
+      "repair": "https://www.locrepair.com/repair-quote/",
+      "starter_locs": "https://www.locrepair.com/starter-loc-quote",
+      "retwist": "https://www.locrepair.com/retwist-quote/",
+      "crochet": "https://www.locrepair.com/crochet-maintenance-quote",
+      "interlock": "https://www.locrepair.com/interlocking-maintenance-quote/",
+      "microlocs": "https://www.locrepair.com/micro-sister-brother-locs-maintenance-quote/"
+    }
+  },
+  
+  "maintenance_booking_links": {
+    "enabled": true,
+    "links": {
+      "retwist": "https://locrepair.as.me/?appointmentType=83058786",
+      "wick": "https://locrepair.as.me/?appointmentType=83060814",
+      "interlock": "https://locrepair.as.me/?appointmentType=83060708",
+      "sisterlock": "https://locrepair.as.me/?appointmentType=83060793",
+      "crochet": "https://locrepair.as.me/?appointmentType=83060747",
+      "bald_coverage": "https://locrepair.as.me/?appointmentType=83060933"
+    }
+  },
+  
+  "training_program": {
+    "enabled": true,
+    "cost": "$49 per week",
+    "signup_method": "text START to 313-455-5627",
+    "instagram_dm": "@locrepairexpert",
+    "bonus": "One free month booth rental ($750+ value)"
+  },
+  
+  "custom_responses": {
+    "running_late": "Thanks for the update! Yesha has been informed you're running behind.",
+    "hours_with_portal": "We're open Sunday through Friday, 11 AM to 7 PM by appointment only. We're closed Saturdays. What service are you interested in so I can help you get started with a quote?"
   },
   
   "services": {
