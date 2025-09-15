@@ -53,51 +53,42 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant, serviceType 
     if (links.length === 1) {
       const link = links[0];
       
-      // ONLY use advanced service messaging if tenant has advanced features enabled
-      if (tenant?.advanced_features?.service_portal && serviceType === 'wick_maintenance') {
-        message = `Wick Locs Maintenance Quote: ${link}`;
-      } else if (tenant?.advanced_features?.bald_coverage && serviceType === 'bald_coverage') {
-        message = `Bald Coverage Quote: ${link}`;
-      } else if (tenant?.advanced_features?.loc_repair && serviceType === 'repair') {
-        message = `Loc Repair Quote: ${link}`;
-      } else if (serviceType === 'starter_locs') {
-        message = `Starter Locs Quote: ${link}`;
-      } else if (tenant?.advanced_features?.service_portal && serviceType === 'sisterlocks') {
-        message = `Sisterlocks Maintenance Quote: ${link}`;
-      } else if (tenant?.advanced_features?.service_portal && serviceType === 'service_portal') {
+      // Service-specific messaging
+      if (serviceType === 'service_portal') {
         message = `Service Portal - Get personalized quotes: ${link}`;
-      } else if (serviceType === 'website') {
-        message = `Visit our website for language support chatbot: ${link}`;
-      } else if (serviceType === 'instagram') {
-        message = `Follow us on Instagram: ${link}`;
-      } else if (serviceType === 'appointment_lookup') {
-        message = `Appointment Lookup - Find and manage your appointments: ${link}`;
-      } else if (tenant?.advanced_features?.maintenance_booking_links && serviceType === 'retwist_booking') {
-        message = `Book your Retwist/Palm Roll maintenance appointment: ${link}`;
-      } else if (tenant?.advanced_features?.wick_locs && serviceType === 'wick_booking') {
+      } else if (serviceType === 'consultation') {
+        message = `Book your consultation appointment: ${link}`;
+      } else if (serviceType === 'retwist_booking') {
+        message = `Book your Retwist maintenance appointment: ${link}`;
+      } else if (serviceType === 'wick_booking') {
         message = `Book your Wick Loc maintenance appointment: ${link}`;
-      } else if (tenant?.advanced_features?.maintenance_booking_links && serviceType === 'interlock_booking') {
+      } else if (serviceType === 'interlock_booking') {
         message = `Book your Interlock maintenance appointment: ${link}`;
-      } else if (tenant?.advanced_features?.maintenance_booking_links && serviceType === 'sisterlock_booking') {
-        message = `Book your Sisterlock/Microlock maintenance appointment: ${link}`;
-      } else if (tenant?.advanced_features?.maintenance_booking_links && serviceType === 'crochet_booking') {
-        message = `Book your Crochet Roots maintenance appointment: ${link}`;
-      } else if (tenant?.advanced_features?.bald_coverage && serviceType === 'bald_coverage_booking') {
+      } else if (serviceType === 'sisterlock_booking') {
+        message = `Book your Sisterlock maintenance appointment: ${link}`;
+      } else if (serviceType === 'crochet_booking') {
+        message = `Book your Crochet maintenance appointment: ${link}`;
+      } else if (serviceType === 'bald_coverage_booking') {
         message = `Book your Bald Coverage maintenance appointment: ${link}`;
-      } else if (link.includes('directions')) {
-        message = `Here are the detailed directions to our door: ${link}`;
+      } else if (serviceType === 'retwist_quote') {
+        message = `Retwist Quote Form: ${link}`;
+      } else if (serviceType === 'bald_coverage_quote') {
+        message = `Bald Coverage Quote Form: ${link}`;
+      } else if (serviceType === 'repair_quote') {
+        message = `Loc Repair Quote Form: ${link}`;
+      } else if (serviceType === 'extensions_quote') {
+        message = `Loc Extensions Quote Form: ${link}`;
+      } else if (serviceType === 'starter_quote') {
+        message = `Starter Locs Quote Form: ${link}`;
+      } else if (serviceType === 'directions') {
+        message = `Directions to our salon: ${link}`;
+      } else if (serviceType === 'appointment_lookup') {
+        message = `Manage your appointments: ${link}`;
       } else {
-        message = `Here's the link we mentioned: ${link}`;
+        message = `Here's the link: ${link}`;
       }
     } else {
-      message = `Here are the links we mentioned:\n${links.map((link, i) => {
-        if (link.includes('service_portal')) return `${i + 1}. Service Portal: ${link}`;
-        if (link.includes('directions')) return `${i + 1}. Directions: ${link}`;
-        if (link.includes('instagram')) return `${i + 1}. Instagram: ${link}`;
-        if (link.includes('appointment-lookup')) return `${i + 1}. Appointment Lookup: ${link}`;
-        if (link.includes(tenant?.base_domain || 'website')) return `${i + 1}. Website (Language Support): ${link}`;
-        return `${i + 1}. ${link}`;
-      }).join('\n')}`;
+      message = `Here are your links:\n${links.map((link, i) => `${i + 1}. ${link}`).join('\n')}`;
     }
     
     await twilioClient.messages.create({
@@ -109,33 +100,45 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant, serviceType 
     fastify.log.info({ 
       fromNumber, 
       linkCount: links.length, 
-      serviceType, 
-      messageType: 'service_quote' 
-    }, "SMS with service quote sent successfully");
+      serviceType 
+    }, "SMS sent successfully");
     
   } catch (err) {
-    fastify.log.error({ err, fromNumber, serviceType }, "Failed to send SMS with service quote");
+    fastify.log.error({ err, fromNumber, serviceType }, "Failed to send SMS");
   }
 }
 
-// Function to get maintenance booking link based on service type
-function getMaintenanceBookingLink(serviceType, tenant) {
-  // ONLY return advanced booking links if tenant has maintenance_booking_links enabled
-  if (!tenant?.advanced_features?.maintenance_booking_links) {
-    return tenant?.booking?.main_url || tenant?.booking_url || tenant?.contact?.website || '#';
-  }
-  
-  const baseLinks = {
-    'retwist': tenant?.maintenance_booking_links?.links?.retwist || tenant?.booking?.maintenance_links?.retwist,
-    'wick': tenant?.maintenance_booking_links?.links?.wick || tenant?.booking?.maintenance_links?.wick,
-    'interlock': tenant?.maintenance_booking_links?.links?.interlock || tenant?.booking?.maintenance_links?.interlock,
-    'sisterlock': tenant?.maintenance_booking_links?.links?.sisterlock || tenant?.booking?.maintenance_links?.sisterlock,
-    'crochet': tenant?.maintenance_booking_links?.links?.crochet || tenant?.booking?.maintenance_links?.crochet,
-    'bald_coverage': tenant?.maintenance_booking_links?.links?.bald_coverage || tenant?.booking?.maintenance_links?.bald_coverage
+// Function to get service quote link
+function getServiceQuoteLink(serviceType, tenant) {
+  const quoteLinks = {
+    'retwist': tenant?.services?.quote_urls?.retwist || tenant?.quote_system?.urls?.retwist,
+    'bald_coverage': tenant?.services?.quote_urls?.bald_coverage || tenant?.quote_system?.urls?.bald_coverage,
+    'repair': tenant?.services?.quote_urls?.repair || tenant?.quote_system?.urls?.repair,
+    'extensions': tenant?.services?.quote_urls?.extensions || tenant?.quote_system?.urls?.extensions,
+    'wick': tenant?.services?.quote_urls?.wick_maintenance || tenant?.quote_system?.urls?.wick_maintenance,
+    'starter': tenant?.services?.quote_urls?.starter_locs || tenant?.quote_system?.urls?.starter_locs,
+    'interlock': tenant?.services?.quote_urls?.interlock || tenant?.quote_system?.urls?.interlock,
+    'sisterlocks': tenant?.services?.quote_urls?.microlocs || tenant?.quote_system?.urls?.microlocs,
+    'crochet': tenant?.services?.quote_urls?.crochet || tenant?.quote_system?.urls?.crochet
   };
   
-  return baseLinks[serviceType] || tenant?.booking?.main_url || tenant?.booking_url || '#';
+  return quoteLinks[serviceType] || tenant?.service_portal?.url || tenant?.booking?.main_url;
 }
+
+// Function to get maintenance booking link
+function getMaintenanceBookingLink(serviceType, tenant) {
+  const bookingLinks = {
+    'retwist': tenant?.booking?.maintenance_links?.retwist || tenant?.maintenance_booking_links?.links?.retwist,
+    'wick': tenant?.booking?.maintenance_links?.wick || tenant?.maintenance_booking_links?.links?.wick,
+    'interlock': tenant?.booking?.maintenance_links?.interlock || tenant?.maintenance_booking_links?.links?.interlock,
+    'sisterlock': tenant?.booking?.maintenance_links?.sisterlock || tenant?.maintenance_booking_links?.links?.sisterlock,
+    'crochet': tenant?.booking?.maintenance_links?.crochet || tenant?.maintenance_booking_links?.links?.crochet,
+    'bald_coverage': tenant?.booking?.maintenance_links?.bald_coverage || tenant?.maintenance_booking_links?.links?.bald_coverage
+  };
+  
+  return bookingLinks[serviceType] || tenant?.booking?.main_url;
+}
+
 // Bulletproof phone normalization
 function normalizePhone(phone) {
   if (!phone) return '';
@@ -220,7 +223,7 @@ function loadKnowledgeFor(tenant) {
   return "";
 }
 
-// CONDITIONAL voice prompt builder - Only adds advanced features if enabled
+// STRUCTURED voice prompt builder
 function buildVoicePrompt(tenant, knowledgeText) {
   const t = tenant || {};
   
@@ -243,7 +246,7 @@ function buildVoicePrompt(tenant, knowledgeText) {
   const canonicalQA = (t.canonical_answers || [])
     .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
     .join("\n") || "(none)";
-  
+
   let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}" with ${loctician}${experience ? ` (${experience})` : ""}.
 
 CRITICAL INSTRUCTIONS:
@@ -251,58 +254,36 @@ CRITICAL INSTRUCTIONS:
 - Never spell out URLs - just say "visit our website" or "check our portal"
 - DO NOT repeat or rephrase the customer's question back to them
 - Answer directly and naturally
-- Be conversational and helpful`;
-
-  // CONDITIONAL: Only add new vs returning flow if enabled
-  if (t.advanced_features?.new_vs_returning_flow) {
-    prompt += `
-- For ALL appointment requests, ALWAYS ask "Are you a new client or a returning client?" first
-- NEW CLIENTS: Send to service portal for quotes
-- RETURNING CLIENTS: Ask what service they usually get, then provide direct booking link`;
-  } else {
-    prompt += `
-- For appointment requests, direct to main booking system or consultation`;
-  }
-
-  prompt += `
-- Never tell someone to just "visit our online system" and hang up
-- Address payment security concerns by mentioning in-person deposit options
-- Always offer to text helpful links and directions`;
-
-  // CONDITIONAL: Only add loctician-specific running late message if this salon has it
-  if (t.custom_responses?.running_late) {
-    prompt += `
-- Acknowledge when clients are running late and inform them ${loctician} is notified`;
-  }
-
-  prompt += `
+- Be conversational and helpful
+- Use the STRUCTURED FLOW for all interactions
+- Always offer to text helpful links and directions
 - When providing address, always say the full street address clearly
 - For non-English speakers, offer callback options or texting for translation help
-- When texting links, always mention what type of link you're sending`;
+- When texting links, always mention what type of link you're sending
 
-  // CONDITIONAL: Only add advanced booking flow if enabled
-  if (t.advanced_features?.new_vs_returning_flow && t.advanced_features?.maintenance_booking_links) {
-    prompt += `
+STRUCTURED CONVERSATION FLOW:
+Main Menu Options:
+1. APPOINTMENTS - For scheduling new appointments or managing existing ones
+2. CONSULTATION - For quotes and in-person consultations  
+3. SALON INFO - For pricing, services, directions, policies, etc.
+4. LOC CARE TIPS - For hair care advice and maintenance tips
 
-ADVANCED APPOINTMENT BOOKING FLOW:
-When someone requests an appointment:
-1. ALWAYS ask: "Are you a new client or a returning client?"
-2. NEW CLIENT: Send service portal link via SMS
-3. RETURNING CLIENT: Ask "What service do you usually get?" then send appropriate maintenance booking link:
-   - Retwist/Palm Roll → Direct booking link
-   - Wick Loc Maintenance → Direct booking link  
-   - Interlock Maintenance → Direct booking link
-   - Sisterlock/Microlock → Direct booking link
-   - Crochet Roots → Direct booking link
-   - Bald Coverage → Direct booking link`;
-  } else {
-    prompt += `
+APPOINTMENT FLOW:
+- Ask: "Are you a new or returning client?"
+- NEW CLIENT: Ask about service interest, then send appropriate quote link
+- RETURNING CLIENT: Ask "new appointment or manage existing?" then route accordingly
 
-BASIC APPOINTMENT BOOKING:
-When someone requests an appointment, direct them to the main booking system or consultation.`;
-  }
+CONSULTATION FLOW:  
+- Ask: "In-person visit or immediate 24/7 quote?"
+- Route to consultation booking or service quote accordingly
 
-  prompt += `
+SALON INFO FLOW:
+- Offer: "You can ask about pricing, services, directions, availability, refunds, deposits, gallery, terms, training, or financing"
+- Answer questions directly and send links when helpful
+
+LOC CARE FLOW:
+- Ask: "Recent install, recent repair, or something else?"
+- Provide targeted advice based on their situation
 
 Salon Information:
 - Name: ${t.studio_name || 'The Salon'}
@@ -327,15 +308,11 @@ ${canonicalQA}
 Knowledge Base:
 ${(knowledgeText || "").slice(0, 8000)}
 
-Remember: Be conversational, direct, and never spell out web addresses. Answer questions directly without repeating them.`;
-
-  // CONDITIONAL: Only add if advanced flow enabled
-  if (t.advanced_features?.new_vs_returning_flow) {
-    prompt += ` ALWAYS ask new vs returning for ALL appointment requests.`;
-  }
+Remember: Guide conversations using the structured flow but allow natural interruptions. Be conversational, direct, and never spell out web addresses. Always follow up with "Is there anything else I can help you with?"`;
 
   return prompt.slice(0, 15000);
-                          }
+}
+
 // Airtable API integration - SIMPLIFIED (only for existing appointment lookups)
 async function callAirtableAPI(tenant, action, params = {}, requestType = 'lookup') {
   if (!tenant?.airtable_base_id || !tenant?.airtable_table_name) {
@@ -451,7 +428,7 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
       const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
       return {
         handled: true,
-        speech: `You have an appointment for ${next.service} on ${dateInfo}${timeInfo}. I'm texting you the confirmation link to manage it.`,
+        speech: `You have an appointment for ${next.service} on ${dateInfo}${timeInfo}. I'm texting you the link to manage it.`,
         data: { appointments: upcoming, sendConfirmation: true }
       };
     } else {
@@ -463,7 +440,7 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
       
       return {
         handled: true,
-        speech: `You have ${upcoming.length} appointments: ${allAppts.join(', ')}. Which appointment would you like to manage? I'm texting you the confirmation link to help you manage any of them.`,
+        speech: `You have ${upcoming.length} appointments: ${allAppts.join(', ')}. Which appointment would you like to manage? I'm texting you the link to help manage them.`,
         data: { appointments: upcoming, sendConfirmation: true, needsSelection: true }
       };
     }
@@ -527,7 +504,7 @@ function formatAppointmentDate(dateStr) {
 fastify.get("/", async () => {
   return { 
     status: "ok", 
-    service: "LocSync Voice Agent - Multi-Tenant",
+    service: "LocSync Voice Agent - Structured Flow",
     tenants: Object.keys(TENANTS).length 
   };
 });
@@ -536,17 +513,17 @@ fastify.get("/health", async () => {
   return { status: "healthy", timestamp: new Date().toISOString() };
 });
 
-// Incoming call handler
+// Incoming call handler with structured greeting
 fastify.post("/incoming-call", async (req, reply) => {
   const toNumber = (req.body?.To || "").trim();
   const fromNumber = (req.body?.From || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
+  fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call - structured flow");
 
   const response = new twiml();
-  const greeting = tenant?.voice_config?.greeting_tts || tenant?.greeting_tts || 
-    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
+  const greeting = tenant?.voice_config?.greeting_tts || 
+    `Thanks for calling ${tenant?.studio_name || "our salon"}. You can say things like: Appointment, Consultation, Salon Info, or Loc Care. What would you like me to help you with?`;
 
   response.say(greeting);
   response.gather({
@@ -559,7 +536,8 @@ fastify.post("/incoming-call", async (req, reply) => {
 
   reply.type("text/xml").send(response.toString());
 });
-// Handle speech input - CLEAN VERSION WITH NO DUPLICATES
+// ========== RETURNING CLIENT SUB-FLOWS ==========
+// Handle speech input - STRUCTURED FLOW VERSION
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult?.trim() || "";
   const toNumber = (req.body?.To || "").trim();
@@ -568,15 +546,13 @@ fastify.post("/handle-speech", async (req, reply) => {
 
   fastify.log.info({ 
     speech: speechResult, 
-    tenant: tenant?.tenant_id,
-    hasAdvancedFeatures: !!tenant?.advanced_features,
-    newVsReturning: !!tenant?.advanced_features?.new_vs_returning_flow
-  }, "Processing speech");
+    tenant: tenant?.tenant_id
+  }, "Processing speech with structured flow");
 
   const response = new twiml();
 
   if (!speechResult) {
-    response.say("I didn't catch that clearly. Could you please repeat what you need? I'm still here to help.");
+    response.say("I didn't catch that clearly. You can say Appointment, Consultation, Salon Info, or Loc Care. What would you like help with?");
     response.gather({
       input: "speech",
       action: "/handle-speech",
@@ -584,7 +560,6 @@ fastify.post("/handle-speech", async (req, reply) => {
       timeout: 10,
       speechTimeout: "auto"
     });
-    response.say("I'm waiting for your response.");
     reply.type("text/xml").send(response.toString());
     return;
   }
@@ -593,82 +568,15 @@ fastify.post("/handle-speech", async (req, reply) => {
     const lowerSpeech = speechResult.toLowerCase();
     let handled = false;
 
-    fastify.log.info({ lowerSpeech, handled }, "Speech processing - before checks");
+    fastify.log.info({ lowerSpeech }, "Structured flow processing");
 
-    // Enhanced multilingual support - CONDITIONAL
-    if (tenant?.advanced_features?.multilingual_support) {
-      if (lowerSpeech.includes('español') || lowerSpeech.includes('spanish') || 
-          lowerSpeech.includes('habla español') || lowerSpeech.includes('hablas español') ||
-          lowerSpeech.includes('en español') || lowerSpeech.includes('no hablo inglés') ||
-          lowerSpeech.includes('no hablo ingles')) {
-        response.say("Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Está en la esquina inferior derecha. Le envío el enlace por mensaje de texto ahora.");
-        const websiteLinks = [tenant?.contact?.website || tenant?.website || ""];
-        if (websiteLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("¿Hay algo más en que pueda ayudarle?");
-        handled = true;
-      }
-      else if (lowerSpeech.includes('french') || lowerSpeech.includes('français') ||
-               lowerSpeech.includes('parlez français') || lowerSpeech.includes('en français') ||
-               lowerSpeech.includes('parlez-vous français') || lowerSpeech.includes('je ne parle pas anglais')) {
-        response.say("Pour le support en français, vous pouvez utiliser notre chat bot sur notre site web. Il est dans le coin inférieur droit. Je vous envoie le lien par SMS maintenant.");
-        const websiteLinks = [tenant?.contact?.website || tenant?.website || ""];
-        if (websiteLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Y a-t-il autre chose que je puisse faire pour vous?");
-        handled = true;
-      }
-      else if (lowerSpeech.includes('german') || lowerSpeech.includes('deutsch') ||
-               lowerSpeech.includes('sprechen sie deutsch') || lowerSpeech.includes('auf deutsch') ||
-               lowerSpeech.includes('ich spreche kein englisch')) {
-        response.say("Für deutsche Unterstützung können Sie unseren Chat-Bot auf unserer Website verwenden. Er befindet sich in der unteren rechten Ecke. Ich sende Ihnen jetzt den Link per SMS.");
-        const websiteLinks = [tenant?.contact?.website || tenant?.website || ""];
-        if (websiteLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Gibt es noch etwas, womit ich Ihnen helfen kann?");
-        handled = true;
-      }
-      else if (lowerSpeech.includes('no english') || lowerSpeech.includes("don't speak english") ||
-               lowerSpeech.includes('other language') || lowerSpeech.includes('translate')) {
-        response.say("For language support, please use our chat bot on our website in the bottom right corner. I'm texting you the link now where you can get help in your language.");
-        const websiteLinks = [tenant?.contact?.website || tenant?.website || ""];
-        if (websiteLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-    }
-    
-    // Website/Instagram requests
-    if (!handled && (lowerSpeech.includes('website') || lowerSpeech.includes('web site') ||
-                     lowerSpeech.includes('online') || lowerSpeech.includes('url'))) {
-      response.say("I'm texting you our website link now so you can easily access it.");
-      const websiteLinks = [tenant?.contact?.website || tenant?.website || ""];
-      if (websiteLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+    // ========== MAIN FLOW PATHS ==========
+
+    // 1. APPOINTMENTS FLOW
+    if (!handled && (lowerSpeech.includes('appointment') || lowerSpeech.includes('book') || 
+                     lowerSpeech.includes('schedule') || lowerSpeech.includes('need an appointment'))) {
+      fastify.log.info("APPOINTMENTS flow triggered");
+      response.say("Are you a new or returning client?");
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -676,15 +584,13 @@ fastify.post("/handle-speech", async (req, reply) => {
         timeout: 12,
         speechTimeout: "auto"
       });
-      response.say("Is there anything else I can help you with?");
       handled = true;
     }
-    
-    if (!handled && (lowerSpeech.includes('instagram') || lowerSpeech.includes('insta') ||
-                     lowerSpeech.includes('social media'))) {
-      response.say("I'm texting you our Instagram link now.");
-      const instaLinks = [tenant?.contact?.instagram_url || ""];
-      if (instaLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, instaLinks, tenant, 'instagram');
+
+    // 2. CONSULTATION FLOW
+    else if (!handled && (lowerSpeech.includes('consultation') || lowerSpeech.includes('consult'))) {
+      fastify.log.info("CONSULTATION flow triggered");
+      response.say("Would you like an in-person visit or an immediate 24/7 quote?");
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -692,242 +598,79 @@ fastify.post("/handle-speech", async (req, reply) => {
         timeout: 12,
         speechTimeout: "auto"
       });
-      response.say("Is there anything else I can help you with?");
       handled = true;
     }
-    
-    // MAIN APPOINTMENT BOOKING FLOW
-    if (!handled && (lowerSpeech.includes('need an appointment') || lowerSpeech.includes('need appointment') ||
-                     lowerSpeech.includes('want an appointment') || lowerSpeech.includes('want appointment') ||
-                     lowerSpeech.includes('book an appointment') || lowerSpeech.includes('book appointment') ||
-                     lowerSpeech.includes('schedule an appointment') || lowerSpeech.includes('schedule appointment') ||
-                     lowerSpeech.includes('looking for slot') || lowerSpeech.includes('slot availability') ||
-                     lowerSpeech.includes('slots available') || lowerSpeech.includes('availability'))) {
-      
-      fastify.log.info({ newVsReturningEnabled: !!tenant?.advanced_features?.new_vs_returning_flow }, "Appointment request received");
-      
-      if (tenant?.advanced_features?.new_vs_returning_flow) {
-        // ADVANCED: Always ask new vs returning
-        response.say("Are you a new client or a returning client?");
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Please let me know if you're new or returning so I can help you book the right way.");
-        handled = true;
-      } else {
-        // BASIC: Direct to main booking
-        response.say("I'd be happy to help you schedule an appointment. I'm texting you our booking information now.");
-        const bookingLinks = [tenant?.booking?.main_url || tenant?.booking_url || tenant?.contact?.website || ""];
-        if (bookingLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, bookingLinks, tenant, 'booking');
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-            }
 
-// NEW CLIENT RESPONSES
-    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
-      if (lowerSpeech.includes('new client') || lowerSpeech.includes('first time') || 
-          lowerSpeech.includes('never been') || lowerSpeech.includes('new customer') ||
-          (lowerSpeech.includes('new') && !lowerSpeech.includes('returning'))) {
-        
-        fastify.log.info("Processing NEW CLIENT response");
-        
-        if (tenant?.advanced_features?.service_portal) {
-          response.say("Welcome! Since you're a new client, you'll need to get a personalized quote first for your specific loc needs. I'm texting you our service portal link now where you can select your service and get pricing.");
-          const servicePortalLink = tenant?.service_portal?.url || tenant?.booking?.main_url || "";
-          if (servicePortalLink) {
-            await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
-            fastify.log.info({ servicePortalLink }, "SMS sent to new client");
-          }
-        } else {
-          response.say("Welcome! I'm texting you our booking information now.");
-          const bookingLinks = [tenant?.booking?.main_url || tenant?.booking_url || ""];
-          if (bookingLinks[0]) {
-            await sendLinksViaSMS(fromNumber, toNumber, bookingLinks, tenant, 'booking');
-          }
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      // RETURNING CLIENT RESPONSES
-      else if (lowerSpeech.includes('returning client') || lowerSpeech.includes('been here before') ||
-               lowerSpeech.includes('existing client') || lowerSpeech.includes('regular client') ||
-               lowerSpeech.includes('come here before') || lowerSpeech.includes('returning customer') ||
-               (lowerSpeech.includes('returning') && !lowerSpeech.includes('new'))) {
-        
-        fastify.log.info("Processing RETURNING CLIENT response");
-        
-        if (tenant?.advanced_features?.maintenance_booking_links) {
-          response.say("Great! Since you're a returning client, what service do you usually get? I can send you a direct booking link. For example, say retwist, wick maintenance, interlock, sisterlocks, crochet, or bald coverage.");
-          response.gather({
-            input: "speech",
-            action: "/handle-speech",
-            method: "POST",
-            timeout: 12,
-            speechTimeout: "auto"
-          });
-          response.say("Which service would you like to book?");
-          handled = true;
-        } else {
-          response.say("Great! Since you're a returning client, I'm texting you our booking information now.");
-          const bookingLinks = [tenant?.booking?.main_url || tenant?.booking_url || ""];
-          if (bookingLinks[0]) {
-            await sendLinksViaSMS(fromNumber, toNumber, bookingLinks, tenant, 'booking');
-          }
-          response.gather({
-            input: "speech",
-            action: "/handle-speech",
-            method: "POST",
-            timeout: 12,
-            speechTimeout: "auto"
-          });
-          response.say("Is there anything else I can help you with?");
-          handled = true;
-        }
-      }
-    }
-    
-    // SERVICE SELECTION RESPONSES (for returning clients)
-    if (!handled && tenant?.advanced_features?.maintenance_booking_links) {
-      if (lowerSpeech.includes('retwist') || lowerSpeech.includes('palm roll')) {
-        fastify.log.info("Processing RETWIST service selection");
-        response.say("Perfect! I'm texting you the direct booking link for your retwist maintenance appointment now.");
-        const bookingLink = getMaintenanceBookingLink('retwist', tenant);
-        if (bookingLink && bookingLink !== '#') {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'retwist_booking');
-          fastify.log.info({ bookingLink }, "Retwist booking link sent");
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('wick') && tenant?.advanced_features?.wick_locs) {
-        fastify.log.info("Processing WICK service selection");
-        response.say("Perfect! I'm texting you the direct booking link for your wick loc maintenance appointment now.");
-        const bookingLink = getMaintenanceBookingLink('wick', tenant);
-        if (bookingLink && bookingLink !== '#') {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'wick_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('interlock')) {
-        fastify.log.info("Processing INTERLOCK service selection");
-        response.say("Perfect! I'm texting you the direct booking link for your interlock maintenance appointment now.");
-        const bookingLink = getMaintenanceBookingLink('interlock', tenant);
-        if (bookingLink && bookingLink !== '#') {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'interlock_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('sister lock') || 
-               lowerSpeech.includes('microlock') || lowerSpeech.includes('micro lock')) {
-        fastify.log.info("Processing SISTERLOCK service selection");
-        response.say("Perfect! I'm texting you the direct booking link for your sisterlock maintenance appointment now.");
-        const bookingLink = getMaintenanceBookingLink('sisterlock', tenant);
-        if (bookingLink && bookingLink !== '#') {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'sisterlock_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('crochet')) {
-        fastify.log.info("Processing CROCHET service selection");
-        response.say("Perfect! I'm texting you the direct booking link for your crochet roots maintenance appointment now.");
-        const bookingLink = getMaintenanceBookingLink('crochet', tenant);
-        if (bookingLink && bookingLink !== '#') {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'crochet_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot') || 
-               (lowerSpeech.includes('bald') && tenant?.advanced_features?.bald_coverage)) {
-        fastify.log.info("Processing BALD COVERAGE service selection");
-        response.say("Perfect! I'm texting you the direct booking link for your bald coverage maintenance appointment now.");
-        const bookingLink = getMaintenanceBookingLink('bald_coverage', tenant);
-        if (bookingLink && bookingLink !== '#') {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'bald_coverage_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
+    // 3. SALON INFO FLOW
+    else if (!handled && (lowerSpeech.includes('salon info') || lowerSpeech.includes('information') ||
+                          lowerSpeech.includes('about') || lowerSpeech.includes('details'))) {
+      fastify.log.info("SALON INFO flow triggered");
+      response.say("You can ask about pricing, services, directions, availability, refunds, deposits, gallery, terms, training, or financing. What would you like to know?");
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      handled = true;
     }
 
-    // Running late notification
-    if (!handled && (lowerSpeech.includes('running late') || 
-                     lowerSpeech.includes('running behind') ||
-                     lowerSpeech.includes('late for') ||
-                     (lowerSpeech.includes('late') && lowerSpeech.includes('appointment')))) {
-      const lateResponse = tenant?.custom_responses?.running_late || 
-        `Thanks for the update! ${tenant?.loctician_name || 'We have'} been informed you're running behind.`;
-      response.say(lateResponse);
+    // 4. LOC CARE TIPS FLOW
+    else if (!handled && (lowerSpeech.includes('loc care') || lowerSpeech.includes('hair care') ||
+                          lowerSpeech.includes('care tips') || lowerSpeech.includes('advice'))) {
+      fastify.log.info("LOC CARE flow triggered");
+      response.say("Are you asking about a recent install, recent repair, or something else?");
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      handled = true;
+    }
+
+    // ========== APPOINTMENT SUB-FLOWS ==========
+
+    // NEW CLIENT APPOINTMENT FLOW
+    else if (!handled && (lowerSpeech.includes('new client') || lowerSpeech.includes('new customer') || 
+                          lowerSpeech.includes('first time') || (lowerSpeech.includes('new') && !lowerSpeech.includes('returning')))) {
+      fastify.log.info("NEW CLIENT appointment sub-flow");
+      response.say("What service are you interested in? You can say loc repair, retwist, bald coverage, extensions, or if you're not sure, just say I don't know.");
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      handled = true;
+    }
+
+    // RETURNING CLIENT APPOINTMENT FLOW  
+    else if (!handled && (lowerSpeech.includes('returning client') || lowerSpeech.includes('return client') ||
+                          lowerSpeech.includes('existing client') || lowerSpeech.includes('been here before') ||
+                          (lowerSpeech.includes('returning') && !lowerSpeech.includes('new')))) {
+      fastify.log.info("RETURNING CLIENT appointment sub-flow");
+      response.say("Do you need a new appointment or do you want to manage an existing appointment?");
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      handled = true;
+    }
+
+    // ========== NEW CLIENT SERVICE SELECTION ==========
+    else if (!handled && (lowerSpeech.includes("i don't know") || lowerSpeech.includes("not sure") || 
+                          lowerSpeech.includes("don't know") || lowerSpeech.includes("unsure"))) {
+      fastify.log.info("NEW CLIENT - doesn't know service");
+      response.say("No problem, let's get you to our Service Portal that asks a few basic questions and automatically sends you to the proper quote form. Sending link now.");
+      const servicePortalLink = tenant?.service_portal?.url || tenant?.booking?.main_url;
+      if (servicePortalLink) await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -939,35 +682,291 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
-    // Directions request
-if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('address') || 
-                 lowerSpeech.includes('location') || lowerSpeech.includes('where are you') ||
-                 lowerSpeech.includes('how to get there') || lowerSpeech.includes('lost'))) {
-  response.say(`We're located at ${tenant?.address || '25240 Lahser Road, Suite 9, Southfield, Michigan 48033'}. I'm texting you detailed directions to our door now.`);
-  const directionLinks = [tenant?.contact?.directions_url || ""];
-  if (directionLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, directionLinks, tenant, 'directions');
-  response.gather({
-    input: "speech",
-    action: "/handle-speech",
-    method: "POST",
-    timeout: 12,
-    speechTimeout: "auto"
-  });
-  response.say("Is there anything else I can help you with?");
-  handled = true;
-}
+    // NEW CLIENT - SPECIFIC SERVICE QUOTE REQUESTS
+    else if (!handled && (lowerSpeech.includes('loc repair') || lowerSpeech.includes('repair'))) {
+      fastify.log.info("NEW CLIENT - loc repair quote");
+      response.say("Sending you the loc repair quote link now.");
+      const repairQuoteLink = getServiceQuoteLink('repair', tenant);
+      if (repairQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [repairQuoteLink], tenant, 'repair_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && lowerSpeech.includes('retwist')) {
+      fastify.log.info("NEW CLIENT - retwist quote");
+      response.say("Sending you the retwist quote link now.");
+      const retwistQuoteLink = getServiceQuoteLink('retwist', tenant);
+      if (retwistQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [retwistQuoteLink], tenant, 'retwist_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot'))) {
+      fastify.log.info("NEW CLIENT - bald coverage quote");
+      response.say("Sending you the bald coverage quote link now.");
+      const baldQuoteLink = getServiceQuoteLink('bald_coverage', tenant);
+      if (baldQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [baldQuoteLink], tenant, 'bald_coverage_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && (lowerSpeech.includes('extensions') || lowerSpeech.includes('extension'))) {
+      fastify.log.info("NEW CLIENT - extensions quote");
+      response.say("Sending you the extensions quote link now.");
+      const extensionsQuoteLink = getServiceQuoteLink('extensions', tenant);
+      if (extensionsQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [extensionsQuoteLink], tenant, 'extensions_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // RETURNING CLIENT - NEW APPOINTMENT
+    else if (!handled && (lowerSpeech.includes('new appointment') || lowerSpeech.includes('new appt') ||
+                          (lowerSpeech.includes('new') && lowerSpeech.includes('appointment')))) {
+      fastify.log.info("RETURNING CLIENT - new appointment");
+      response.say("Which service do you usually get? Say retwist, wick maintenance, interlock, sisterlocks, crochet, or bald coverage.");
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      handled = true;
+    }
+
+    // RETURNING CLIENT - MANAGE EXISTING APPOINTMENT
+    else if (!handled && (lowerSpeech.includes('manage') || lowerSpeech.includes('existing') || 
+                          lowerSpeech.includes('change') || lowerSpeech.includes('cancel') || lowerSpeech.includes('reschedule'))) {
+      fastify.log.info("RETURNING CLIENT - manage existing appointment");
+      
+      const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+        phone: fromNumber
+      }, 'manage');
+      
+      if (appointmentResult.handled) {
+        response.say(appointmentResult.speech);
+        
+        if (appointmentResult.data?.sendConfirmation) {
+          const appointmentLookupUrl = tenant?.contact?.appointment_lookup || "";
+          if (appointmentLookupUrl) await sendLinksViaSMS(fromNumber, toNumber, [appointmentLookupUrl], tenant, 'appointment_lookup');
+        }
+        
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        response.say("Is there anything else I can help you with?");
+        handled = true;
+      }
+    }
+
+    // RETURNING CLIENT - SERVICE BOOKING SELECTIONS
+    else if (!handled && lowerSpeech.includes('retwist')) {
+      fastify.log.info("RETURNING CLIENT - retwist booking");
+      response.say("Sending you the direct booking link for your retwist maintenance appointment now.");
+      const bookingLink = getMaintenanceBookingLink('retwist', tenant);
+      if (bookingLink) await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'retwist_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && lowerSpeech.includes('wick')) {
+      fastify.log.info("RETURNING CLIENT - wick booking");
+      response.say("Sending you the direct booking link for your wick loc maintenance appointment now.");
+      const bookingLink = getMaintenanceBookingLink('wick', tenant);
+      if (bookingLink) await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'wick_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && lowerSpeech.includes('interlock')) {
+      fastify.log.info("RETURNING CLIENT - interlock booking");
+      response.say("Sending you the direct booking link for your interlock maintenance appointment now.");
+      const bookingLink = getMaintenanceBookingLink('interlock', tenant);
+      if (bookingLink) await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'interlock_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('microlock'))) {
+      fastify.log.info("RETURNING CLIENT - sisterlock booking");
+      response.say("Sending you the direct booking link for your sisterlock maintenance appointment now.");
+      const bookingLink = getMaintenanceBookingLink('sisterlock', tenant);
+      if (bookingLink) await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'sisterlock_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && lowerSpeech.includes('crochet')) {
+      fastify.log.info("RETURNING CLIENT - crochet booking");
+      response.say("Sending you the direct booking link for your crochet maintenance appointment now.");
+      const bookingLink = getMaintenanceBookingLink('crochet', tenant);
+      if (bookingLink) await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'crochet_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    else if (!handled && lowerSpeech.includes('bald coverage')) {
+      fastify.log.info("RETURNING CLIENT - bald coverage booking");
+      response.say("Sending you the direct booking link for your bald coverage maintenance appointment now.");
+      const bookingLink = getMaintenanceBookingLink('bald_coverage', tenant);
+      if (bookingLink) await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'bald_coverage_booking');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // ========== CONSULTATION SUB-FLOWS ==========
+
+    // CONSULTATION - IN-PERSON VISIT
+    else if (!handled && (lowerSpeech.includes('in-person') || lowerSpeech.includes('visit') || 
+                          lowerSpeech.includes('in person'))) {
+      fastify.log.info("CONSULTATION - in-person visit");
+      response.say("Sending you the consultation booking link now.");
+      const consultationLink = tenant?.booking?.consultation_url;
+      if (consultationLink) await sendLinksViaSMS(fromNumber, toNumber, [consultationLink], tenant, 'consultation');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // CONSULTATION - IMMEDIATE QUOTE
+    else if (!handled && (lowerSpeech.includes('immediate') || lowerSpeech.includes('quote') || 
+                          lowerSpeech.includes('24/7') || lowerSpeech.includes('online'))) {
+      fastify.log.info("CONSULTATION - immediate quote");
+      response.say("Which service are you interested in? You can say loc repair, retwist, bald coverage, extensions, or if you're not sure, just say I don't know.");
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      handled = true;
+    }
+
+    // ========== SALON INFO SUB-FLOWS ==========
+
+    // DIRECTIONS
+    else if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('address') || 
+                          lowerSpeech.includes('location') || lowerSpeech.includes('where'))) {
+      fastify.log.info("SALON INFO - directions");
+      response.say(`We're located at ${tenant?.address || '25240 Lahser Road, Suite 9, Southfield, Michigan 48033'}. I'm texting you detailed directions now.`);
+      const directionLinks = [tenant?.contact?.directions_url || ""];
+      if (directionLinks[0]) await sendLinksViaSMS(fromNumber, toNumber, directionLinks, tenant, 'directions');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // HOURS
+    else if (!handled && (lowerSpeech.includes('hours') || lowerSpeech.includes('open') || lowerSpeech.includes('close'))) {
+      fastify.log.info("SALON INFO - hours");
+      response.say(`We're ${tenant?.hours?.hours_string || 'open Sunday through Friday, 11 AM to 7 PM'} by appointment only. We're closed Saturdays.`);
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
 
     // Log final handling status
-    fastify.log.info({ handled, lowerSpeech }, "Speech processing complete");
+    fastify.log.info({ handled, lowerSpeech }, "Structured flow processing complete");
 
     // Continue conversation with flow control
     if (handled) {
       // Only hang up for explicit goodbye phrases
       if (lowerSpeech.includes('bye') || lowerSpeech.includes('goodbye') || 
-          lowerSpeech.includes('that\'s all') || lowerSpeech.includes('that is all') ||
-          lowerSpeech.includes('nothing else') || lowerSpeech.includes('no more') ||
-          lowerSpeech.includes('i\'m done') || lowerSpeech.includes('im done') ||
-          lowerSpeech.includes('have a good day') || lowerSpeech.includes('talk to you later') ||
+          lowerSpeech.includes('that\'s all') || lowerSpeech.includes('nothing else') ||
+          lowerSpeech.includes('no more') || lowerSpeech.includes('i\'m done') ||
           (lowerSpeech.includes('no') && (lowerSpeech.includes('thank') || lowerSpeech.includes('good')))) {
         response.say("You're welcome! Have a great day!");
         response.hangup();
@@ -977,7 +976,7 @@ if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('addr
         response.hangup();
       }
     } else {
-      // If not handled, use OpenAI
+      // If not handled by structured flow, use OpenAI fallback
       const knowledgeText = loadKnowledgeFor(tenant);
       const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
 
@@ -992,18 +991,9 @@ if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('addr
       });
 
       const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
-        "I'm sorry, I couldn't process that right now.";
+        "I'm sorry, I couldn't process that right now. You can say Appointment, Consultation, Salon Info, or Loc Care. What would you like help with?";
       
-      // Check for URLs in the AI response and send via SMS if configured
-      const urls = extractUrls(aiResponse);
-      if (urls.length > 0) {
-        await sendLinksViaSMS(fromNumber, toNumber, urls, tenant, 'general');
-        const cleanResponse = aiResponse.replace(/(https?:\/\/[^\s]+)/g, '').trim();
-        response.say(`${cleanResponse} I'm texting you the link now.`);
-      } else {
-        response.say(aiResponse);
-      }
-
+      response.say(aiResponse);
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -1011,13 +1001,12 @@ if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('addr
         timeout: 12,
         speechTimeout: "auto"
       });
-
       response.say("Is there anything else I can help you with?");
     }
 
   } catch (err) {
-    fastify.log.error({ err }, "Speech processing error");
-    response.say("I'm having a technical issue. Let me try again - what did you need help with?");
+    fastify.log.error({ err }, "Speech processing error in structured flow");
+    response.say("I'm having a technical issue. You can say Appointment, Consultation, Salon Info, or Loc Care. What would you like help with?");
     response.gather({
       input: "speech",
       action: "/handle-speech",
@@ -1025,7 +1014,6 @@ if (!handled && (lowerSpeech.includes('direction') || lowerSpeech.includes('addr
       timeout: 10,
       speechTimeout: "auto"
     });
-    response.say("I'm listening.");
   }
 
   reply.type("text/xml").send(response.toString());
@@ -1048,7 +1036,7 @@ fastify.post("/incoming-sms", async (req, reply) => {
       const result = await callAirtableAPI(tenant, 'lookup_appointments', { phone: fromNumber });
       response.message(result.speech || "Please call us for appointment help.");
     } else {
-      response.message(`Thanks for texting! Call us or visit our website for assistance.`);
+      response.message("Thanks for texting! Call us for assistance with appointments, consultations, salon info, or loc care tips.");
     }
   } catch (err) {
     fastify.log.error({ err }, "SMS error");
@@ -1073,7 +1061,8 @@ fastify.get("/test/:tenantId", async (req, reply) => {
     phone_normalized: normalizePhone(fullTenant?.phone_number),
     booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
     has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId),
-    advanced_features: fullTenant?.advanced_features || {}
+    advanced_features: fullTenant?.advanced_features || {},
+    flow_type: "structured"
   };
 });
 
@@ -1100,6 +1089,6 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
     fastify.log.error(err);
     process.exit(1);
   }
-  console.log(`🚀 LocSync Voice Bot with Airtable running on ${address}`);
+  console.log(`🚀 LocSync Voice Bot - Structured Flow running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
 });
