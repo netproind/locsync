@@ -46,7 +46,7 @@
     "voice": "alloy", 
     "model": "gpt-4o-mini",
     "temperature": 0.7,
-    "greeting_tts": "Thanks for calling the Loc Repair Clinic. How can I help you today?",
+    "greeting_tts": "Thanks for calling the Loc Repair Clinic. You can say things like: Appointment, Consultation, Salon Info, or Loc Care. What would you like me to help you with?",
     "no_repeat_questions": true,
     "send_links_via_sms": true
   },
