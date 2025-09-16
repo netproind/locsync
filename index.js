@@ -536,8 +536,8 @@ fastify.post("/incoming-call", async (req, reply) => {
 
   reply.type("text/xml").send(response.toString());
 });
-// ========== RETURNING CLIENT SUB-FLOWS ==========
-// Handle speech input - STRUCTURED FLOW VERSION
+
+// Handle speech input - CORRECTED STRUCTURED FLOW
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult?.trim() || "";
   const toNumber = (req.body?.To || "").trim();
@@ -547,7 +547,7 @@ fastify.post("/handle-speech", async (req, reply) => {
   fastify.log.info({ 
     speech: speechResult, 
     tenant: tenant?.tenant_id
-  }, "Processing speech with structured flow");
+  }, "Processing speech with corrected structured flow");
 
   const response = new twiml();
 
@@ -568,7 +568,7 @@ fastify.post("/handle-speech", async (req, reply) => {
     const lowerSpeech = speechResult.toLowerCase();
     let handled = false;
 
-    fastify.log.info({ lowerSpeech }, "Structured flow processing");
+    fastify.log.info({ lowerSpeech }, "Corrected flow processing");
 
     // ========== MAIN FLOW PATHS ==========
 
@@ -635,9 +635,9 @@ fastify.post("/handle-speech", async (req, reply) => {
 
     // NEW CLIENT APPOINTMENT FLOW
     else if (!handled && (lowerSpeech.includes('new client') || lowerSpeech.includes('new customer') || 
-                          lowerSpeech.includes('first time') || (lowerSpeech.includes('new') && !lowerSpeech.includes('returning')))) {
+                          lowerSpeech.includes('first time') || (lowerSpeech.includes('new') && !lowerSpeech.includes('returning') && !lowerSpeech.includes('appointment')))) {
       fastify.log.info("NEW CLIENT appointment sub-flow");
-      response.say("What service are you interested in? You can say loc repair, retwist, bald coverage, extensions, or if you're not sure, just say I don't know.");
+      response.say("What service are you interested in? You can say retwist, crochet maintenance, bald coverage, loc repair, extensions, wick maintenance, starter locs, or if you're not sure, just say I don't know.");
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -664,10 +664,10 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
-    // ========== NEW CLIENT SERVICE SELECTION ==========
+    // ========== NEW CLIENT SERVICE QUOTE SELECTION (QUOTES ONLY) ==========
     else if (!handled && (lowerSpeech.includes("i don't know") || lowerSpeech.includes("not sure") || 
                           lowerSpeech.includes("don't know") || lowerSpeech.includes("unsure"))) {
-      fastify.log.info("NEW CLIENT - doesn't know service");
+      fastify.log.info("NEW CLIENT - doesn't know service, sending to service portal");
       response.say("No problem, let's get you to our Service Portal that asks a few basic questions and automatically sends you to the proper quote form. Sending link now.");
       const servicePortalLink = tenant?.service_portal?.url || tenant?.booking?.main_url;
       if (servicePortalLink) await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
@@ -682,28 +682,11 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
-    // NEW CLIENT - SPECIFIC SERVICE QUOTE REQUESTS
-    else if (!handled && (lowerSpeech.includes('loc repair') || lowerSpeech.includes('repair'))) {
-      fastify.log.info("NEW CLIENT - loc repair quote");
-      response.say("Sending you the loc repair quote link now.");
-      const repairQuoteLink = getServiceQuoteLink('repair', tenant);
-      if (repairQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [repairQuoteLink], tenant, 'repair_quote');
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-
+    // NEW CLIENT RETWIST QUOTE
     else if (!handled && lowerSpeech.includes('retwist')) {
-      fastify.log.info("NEW CLIENT - retwist quote");
-      response.say("Sending you the retwist quote link now.");
-      const retwistQuoteLink = getServiceQuoteLink('retwist', tenant);
-      if (retwistQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [retwistQuoteLink], tenant, 'retwist_quote');
+      fastify.log.info("NEW CLIENT - retwist QUOTE");
+      response.say("Sending you the retwist quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/retwist-quote/'], tenant, 'retwist_quote');
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -715,11 +698,27 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
+    // NEW CLIENT CROCHET MAINTENANCE QUOTE
+    else if (!handled && (lowerSpeech.includes('crochet maintenance') || (lowerSpeech.includes('crochet') && lowerSpeech.includes('maintenance')))) {
+      fastify.log.info("NEW CLIENT - crochet maintenance QUOTE");
+      response.say("Sending you the crochet maintenance quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/crochet-maintenance-quote'], tenant, 'crochet_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // NEW CLIENT BALD COVERAGE QUOTE
     else if (!handled && (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot'))) {
-      fastify.log.info("NEW CLIENT - bald coverage quote");
-      response.say("Sending you the bald coverage quote link now.");
-      const baldQuoteLink = getServiceQuoteLink('bald_coverage', tenant);
-      if (baldQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [baldQuoteLink], tenant, 'bald_coverage_quote');
+      fastify.log.info("NEW CLIENT - bald coverage QUOTE");
+      response.say("Sending you the bald coverage quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/bald-quote-for-existing-locs/'], tenant, 'bald_coverage_quote');
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -731,11 +730,11 @@ fastify.post("/handle-speech", async (req, reply) => {
       handled = true;
     }
 
-    else if (!handled && (lowerSpeech.includes('extensions') || lowerSpeech.includes('extension'))) {
-      fastify.log.info("NEW CLIENT - extensions quote");
-      response.say("Sending you the extensions quote link now.");
-      const extensionsQuoteLink = getServiceQuoteLink('extensions', tenant);
-      if (extensionsQuoteLink) await sendLinksViaSMS(fromNumber, toNumber, [extensionsQuoteLink], tenant, 'extensions_quote');
+    // NEW CLIENT LOC REPAIR QUOTE
+    else if (!handled && (lowerSpeech.includes('loc repair') || (lowerSpeech.includes('repair') && !lowerSpeech.includes('recent')))) {
+      fastify.log.info("NEW CLIENT - loc repair QUOTE");
+      response.say("Sending you the loc repair quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/repair-quote/'], tenant, 'repair_quote');
       response.gather({
         input: "speech",
         action: "/handle-speech",
@@ -746,6 +745,55 @@ fastify.post("/handle-speech", async (req, reply) => {
       response.say("Is there anything else I can help you with?");
       handled = true;
     }
+
+    // NEW CLIENT EXTENSIONS QUOTE
+    else if (!handled && (lowerSpeech.includes('extensions') || lowerSpeech.includes('extension'))) {
+      fastify.log.info("NEW CLIENT - extensions QUOTE");
+      response.say("Sending you the extensions quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/permanent-loc-extensions-quote/'], tenant, 'extensions_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // NEW CLIENT WICK MAINTENANCE QUOTE
+    else if (!handled && (lowerSpeech.includes('wick maintenance') || (lowerSpeech.includes('wick') && lowerSpeech.includes('maintenance')))) {
+      fastify.log.info("NEW CLIENT - wick maintenance QUOTE");
+      response.say("Sending you the wick maintenance quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/wick-maintenance-quote/'], tenant, 'wick_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+    }
+
+    // NEW CLIENT STARTER LOCS QUOTE
+    else if (!handled && (lowerSpeech.includes('starter locs') || lowerSpeech.includes('starter loc'))) {
+      fastify.log.info("NEW CLIENT - starter locs QUOTE");
+      response.say("Sending you the starter locs quote form now.");
+      await sendLinksViaSMS(fromNumber, toNumber, ['https://www.locrepair.com/starter-loc-quote/'], tenant, 'starter_quote');
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      response.say("Is there anything else I can help you with?");
+      handled = true;
+          }
+// ========== RETURNING CLIENT SUB-FLOWS ==========
 
     // RETURNING CLIENT - NEW APPOINTMENT
     else if (!handled && (lowerSpeech.includes('new appointment') || lowerSpeech.includes('new appt') ||
@@ -1092,3 +1140,23 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`🚀 LocSync Voice Bot - Structured Flow running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
 });
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+        
+      
