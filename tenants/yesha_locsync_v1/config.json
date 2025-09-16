@@ -79,6 +79,7 @@
     "urls": {
       "bald_coverage": "https://www.locrepair.com/bald-quote-for-existing-locs/",
       "wick_maintenance": "https://www.locrepair.com/wick-maintenance-quote/",
+      "wick": "https://www.locrepair.com/wick-maintenance-quote/",
       "loc_attachment": "https://www.locrepair.com/loc-reattachment-quote/",
       "extensions": "https://www.locrepair.com/permanent-loc-extensions-quote/",
       "repair": "https://www.locrepair.com/repair-quote/",
@@ -86,6 +87,7 @@
       "retwist": "https://www.locrepair.com/retwist-quote/",
       "crochet": "https://www.locrepair.com/crochet-maintenance-quote",
       "interlock": "https://www.locrepair.com/interlocking-maintenance-quote/",
+      "sisterlock": "https://www.locrepair.com/micro-sister-brother-locs-maintenance-quote/",
       "microlocs": "https://www.locrepair.com/micro-sister-brother-locs-maintenance-quote/"
     }
   },
@@ -118,18 +120,7 @@
   "services": {
     "primary": ["Retwists", "Crochet Maintenance", "Interlock Maintenance", "Loc Extensions", "Repairs", "Combining Locs", "Sisterlocks", "Bald Coverage"],
     "specialties": ["Loc Repair", "Bald Coverage", "Wick Locs"],
-    "starter_methods": ["Comb coil", "Braid locs", "2 strand twist"],
-    "quote_urls": {
-      "bald_coverage": "https://www.locrepair.com/bald-quote-for-existing-locs/",
-      "wick_maintenance": "https://www.locrepair.com/wick-maintenance-quote/",
-      "loc_attachment": "https://www.locrepair.com/loc-reattachment-quote/",
-      "extensions": "https://www.locrepair.com/permanent-loc-extensions-quote/",
-      "repair": "https://www.locrepair.com/repair-quote/",
-      "retwist": "https://www.locrepair.com/retwist-quote/",
-      "crochet": "https://www.locrepair.com/crochet-maintenance-quote",
-      "interlock": "https://www.locrepair.com/interlocking-maintenance-quote/",
-      "microlocs": "https://www.locrepair.com/micro-sister-brother-locs-maintenance-quote/"
-    }
+    "starter_methods": ["Comb coil", "Braid locs", "2 strand twist"]
   },
   
   "policies": {
@@ -159,51 +150,6 @@
     "no_packages": true,
     "no_discounts": true,
     "no_gift_cards": true
-  },
-
-  "training_program_offered": {
-    "question": "Do you offer training classes or courses?",
-    "answer": "Yes, we offer a comprehensive Loc Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
-  },
-  "training_cost": {
-    "question": "How much does the training cost?",
-    "answer": "The training program costs 49 dollars per week and you can cancel anytime. Your first paying client, which typically brings in 95 dollars or more, can cover the cost of your training investment."
-  },
-  "training_experience_required": {
-    "question": "Do I need experience for the training program?",
-    "answer": "No experience is required. Our program is designed for beginners and we welcome students at all skill levels."
-  },
-  "training_curriculum": {
-    "question": "What do you learn in the training program?",
-    "answer": "You'll learn how to identify when repairs are needed, professional repair techniques for thinning roots, bald spots, and broken locs, understanding the difference between loc maintenance and repair, and how to earn income from repair services."
-  },
-  "training_duration": {
-    "question": "How long is the training program?",
-    "answer": "Training is delivered weekly in small, focused lessons so you can build skills step by step at a manageable pace."
-  },
-  "training_bonus": {
-    "question": "What bonus do you get for completing training?",
-    "answer": "Students who complete the program earn one free month booth rental at the Loc Repair Clinic U Natural Hair in Southfield, Michigan. That's a 750 dollar plus value, which means you can immediately start taking clients and keeping all the money you make."
-  },
-  "training_location": {
-    "question": "Where is the training located?",
-    "answer": "Training takes place at the Loc Repair Clinic at U Natural Hair in Southfield, Michigan. You can ask about remote or virtual options if you're not local."
-  },
-  "training_enrollment": {
-    "question": "How do I sign up for training?",
-    "answer": "To enroll, you can text START to 3 1 3 4 5 5 5 6 2 7  or send a direct message to at loc repair expert on Instagram."
-  },
-  "training_availability": {
-    "question": "Are there limited spots for training?",
-    "answer": "Yes, enrollment is first come, first served. Once spots are filled, you'll be placed on a waitlist for the next available session."
-  },
-  "training_earning_potential": {
-    "question": "Can I start earning money after training?",
-    "answer": "Yes! The program prepares you to take paying clients right away. Many students cover their training costs with their first client, and completing students get a free month of booth rental to start their business immediately."
-  },
-  "training_remote_options": {
-    "question": "Do you offer remote or online training?",
-    "answer": "Training primarily takes place in Southfield, Michigan, but you can ask about remote or virtual options if you're not local."
   },
 
   "canonical_answers": [
@@ -266,17 +212,61 @@
     {
       "q": "Can I bring my dog?",
       "a": "Only service animals are allowed for health and safety reasons."
+    },
+    {
+      "q": "Do you offer training classes or courses?",
+      "a": "Yes, we offer a comprehensive Loc Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
+    },
+    {
+      "q": "How much does the training cost?",
+      "a": "The training program costs 49 dollars per week and you can cancel anytime. Your first paying client, which typically brings in 95 dollars or more, can cover the cost of your training investment."
+    },
+    {
+      "q": "Do I need experience for the training program?",
+      "a": "No experience is required. Our program is designed for beginners and we welcome students at all skill levels."
+    },
+    {
+      "q": "What do you learn in the training program?",
+      "a": "You'll learn how to identify when repairs are needed, professional repair techniques for thinning roots, bald spots, and broken locs, understanding the difference between loc maintenance and repair, and how to earn income from repair services."
+    },
+    {
+      "q": "How long is the training program?",
+      "a": "Training is delivered weekly in small, focused lessons so you can build skills step by step at a manageable pace."
+    },
+    {
+      "q": "What bonus do you get for completing training?",
+      "a": "Students who complete the program earn one free month booth rental at the Loc Repair Clinic U Natural Hair in Southfield, Michigan. That's a 750 dollar plus value, which means you can immediately start taking clients and keeping all the money you make."
+    },
+    {
+      "q": "Where is the training located?",
+      "a": "Training takes place at the Loc Repair Clinic at U Natural Hair in Southfield, Michigan. You can ask about remote or virtual options if you're not local."
+    },
+    {
+      "q": "How do I sign up for training?",
+      "a": "To enroll, you can text START to 3 1 3 4 5 5 5 6 2 7 or send a direct message to at loc repair expert on Instagram."
+    },
+    {
+      "q": "Are there limited spots for training?",
+      "a": "Yes, enrollment is first come, first served. Once spots are filled, you'll be placed on a waitlist for the next available session."
+    },
+    {
+      "q": "Can I start earning money after training?",
+      "a": "Yes! The program prepares you to take paying clients right away. Many students cover their training costs with their first client, and completing students get a free month of booth rental to start their business immediately."
+    },
+    {
+      "q": "Do you offer remote or online training?",
+      "a": "Training primarily takes place in Southfield, Michigan, but you can ask about remote or virtual options if you're not local."
     }
   ],
   
-"quick_responses": {
-  "walk_in": "We're appointment-only. Call us for immediate availability.",
-  "pricing": "Our pricing is quote-based since everyone's needs are different. Visit our service portal to start.",
-  "reschedule": "Call us or use our appointment lookup link to reschedule.",
-  "deposit_in_person": "We offer in-person deposit payment options for security concerns.",
-  "portal_access": "We'll send you our service portal to get started.",
-  "directions": "We're texting you detailed directions to our door.",
-  "review": "We appreciate reviews - we'll send you the link.",
-  "running_late": "Thanks for the update! Yesha has been informed you're running behind."
-}
+  "quick_responses": {
+    "walk_in": "We're appointment-only. Call us for immediate availability.",
+    "pricing": "Our pricing is quote-based since everyone's needs are different. Visit our service portal to start.",
+    "reschedule": "Call us or use our appointment lookup link to reschedule.",
+    "deposit_in_person": "We offer in-person deposit payment options for security concerns.",
+    "portal_access": "We'll send you our service portal to get started.",
+    "directions": "We're texting you detailed directions to our door.",
+    "review": "We appreciate reviews - we'll send you the link.",
+    "running_late": "Thanks for the update! Yesha has been informed you're running behind."
+  }
 }
