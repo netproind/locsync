@@ -1,7 +1,7 @@
 {
   "salon_type": "pro_plus",
-  "salon_name": "Loc Repair Clinic",
-  "studio_name": "Loc Repair Clinic",
+  "salon_name": "Lock Repair Clinic",
+  "studio_name": "Lock Repair Clinic",
   "loctician_name": "Yesha",
   "experience_years": 17,
   "base_domain": "locrepair.com",
@@ -46,7 +46,7 @@
     "voice": "nova", 
     "model": "gpt-4o-mini",
     "temperature": 0.8,
-    "greeting_tts": "Thanks for calling the Loc Repair Clinic. You can say things like: Appointment, Consultation, Salon Info, or Loc Care. What would you like me to help you with?",
+    "greeting_tts": "Thanks for calling the Lock Repair Clinic. You can say things like: Appointment, Consultation, Salon Info, or Loc Care. What would you like me to help you with?",
     "no_repeat_questions": true,
     "send_links_via_sms": true
   },
@@ -113,7 +113,7 @@
   },
   
   "custom_responses": {
-    "running_late": "Thanks for the update! Yesha has been informed you're running behind.",
+    "running_late": "Thanks for the update! Yayshah has been informed you're running behind.",
     "hours_with_portal": "We're open Sunday through Friday, 11 AM to 7 PM by appointment only. We're closed Saturdays. What service are you interested in so I can help you get started with a quote?"
   },
   
@@ -215,7 +215,7 @@
     },
     {
       "q": "Do you offer training classes or courses?",
-      "a": "Yes, we offer a comprehensive Loc Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
+      "a": "Yes, we offer a comprehensive Lock Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
     },
     {
       "q": "How much does the training cost?",
@@ -235,11 +235,11 @@
     },
     {
       "q": "What bonus do you get for completing training?",
-      "a": "Students who complete the program earn one free month booth rental at the Loc Repair Clinic U Natural Hair in Southfield, Michigan. That's a 750 dollar plus value, which means you can immediately start taking clients and keeping all the money you make."
+      "a": "Students who complete the program earn one free month booth rental at the Lock Repair Clinic U Natural Hair in Southfield, Michigan. That's a 750 dollar plus value, which means you can immediately start taking clients and keeping all the money you make."
     },
     {
       "q": "Where is the training located?",
-      "a": "Training takes place at the Loc Repair Clinic at U Natural Hair in Southfield, Michigan. You can ask about remote or virtual options if you're not local."
+      "a": "Training takes place at the Lock Repair Clinic at U Natural Hair in Southfield, Michigan. You can ask about remote or virtual options if you're not local."
     },
     {
       "q": "How do I sign up for training?",
