@@ -26,6 +26,77 @@ const twiml = twilio.twiml.VoiceResponse;
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
+// ---------------- ELEVENLABS INTEGRATION ----------------
+async function generateElevenLabsAudio(text, tenant) {
+  try {
+    // Check if ElevenLabs is configured
+    if (!process.env.ELEVENLABS_API_KEY) {
+      return null; // Will use fallback TTS
+    }
+
+    // Use tenant-specific voice if available, otherwise default
+    const voiceId = tenant?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
+    
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      {
+        method: 'POST',
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+        },
+        body: JSON.stringify({
+          text: text,
+          model_id: "eleven_flash_v2_5",
+          voice_settings: {
+            stability: 0.75,
+            similarity_boost: 0.8,
+            speed: 1.0
+          }
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`ElevenLabs API error: ${response.status}`);
+    }
+
+    return await response.arrayBuffer();
+  } catch (error) {
+    fastify.log.error({ err: error }, "ElevenLabs TTS error");
+    return null; // Will fallback to Twilio TTS
+  }
+}
+
+// Helper function to use ElevenLabs or fallback to Twilio TTS
+async function respondWithNaturalVoice(response, text, tenant) {
+  try {
+    if (process.env.ELEVENLABS_API_KEY) {
+      const audioBuffer = await generateElevenLabsAudio(text, tenant);
+      
+      if (audioBuffer) {
+        // Create temporary audio file for Twilio
+        const audioFilename = `audio_${Date.now()}.mp3`;
+        const audioPath = `/tmp/${audioFilename}`;
+        fs.writeFileSync(audioPath, Buffer.from(audioBuffer));
+        
+        // Serve the file and play it
+        response.play(`https://locsync-q7z9.onrender.com/audio/${audioFilename}`);
+        
+        fastify.log.info('Using ElevenLabs voice for response');
+        return true;
+      }
+    }
+  } catch (error) {
+    fastify.log.error({ err: error }, "Voice generation failed, using fallback");
+  }
+  
+  // Fallback to Twilio TTS
+  response.say(text);
+  fastify.log.info('Using Twilio TTS fallback');
+  return false;
+}
 // ---------------- ENHANCED TENANT LOADING ----------------
 let TENANTS = {};
 let TENANT_DETAILS = new Map();
@@ -254,7 +325,6 @@ function loadKnowledgeFor(tenant) {
   }
   return "";
 }
-
 // DYNAMIC voice prompt builder based on tenant capabilities
 function buildVoicePrompt(tenant, knowledgeText) {
   const t = tenant || {};
@@ -544,18 +614,46 @@ function formatAppointmentDate(dateStr) {
     return dateStr;
   }
 }
-
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
   return { 
     status: "ok", 
     service: "LocSync Voice Agent - Multi-Tenant",
-    tenants: Object.keys(TENANTS).length 
+    tenants: Object.keys(TENANTS).length,
+    elevenlabs: process.env.ELEVENLABS_API_KEY ? "enabled" : "disabled"
   };
 });
 
 fastify.get("/health", async () => {
   return { status: "healthy", timestamp: new Date().toISOString() };
+});
+
+// ---------------- ELEVENLABS AUDIO SERVING ROUTE ----------------
+fastify.get('/audio/:filename', async (request, reply) => {
+  try {
+    const filename = request.params.filename;
+    const audioPath = `/tmp/${filename}`;
+    
+    if (fs.existsSync(audioPath)) {
+      const audio = fs.readFileSync(audioPath);
+      reply.type('audio/mpeg').send(audio);
+      
+      // Clean up file after serving
+      setTimeout(() => {
+        try { 
+          fs.unlinkSync(audioPath); 
+          fastify.log.info(`Cleaned up audio file: ${filename}`);
+        } catch (e) {
+          fastify.log.warn(`Failed to cleanup audio file: ${filename}`);
+        }
+      }, 5000);
+    } else {
+      reply.code(404).send('Audio not found');
+    }
+  } catch (error) {
+    fastify.log.error({ err: error }, "Error serving audio");
+    reply.code(500).send('Error serving audio');
+  }
 });
 
 // Incoming call handler - uses dynamic greeting from tenant config
@@ -571,7 +669,9 @@ fastify.post("/incoming-call", async (req, reply) => {
   const greeting = tenant?.voice_config?.greeting_tts || 
     `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
 
-  response.say(greeting);
+  // Use ElevenLabs for greeting if available
+  await respondWithNaturalVoice(response, greeting, tenant);
+  
   response.gather({
     input: "speech",
     action: "/handle-speech",
@@ -579,555 +679,6 @@ fastify.post("/incoming-call", async (req, reply) => {
     timeout: 10,
     speechTimeout: "auto"
   });
-
-  reply.type("text/xml").send(response.toString());
-});
-
-// Handle speech input - DYNAMIC based on tenant capabilities with RETURNING CLIENT FIX
-fastify.post("/handle-speech", async (req, reply) => {
-  const speechResult = req.body?.SpeechResult?.trim() || "";
-  const toNumber = (req.body?.To || "").trim();
-  const fromNumber = (req.body?.From || "").trim();
-  const tenant = getTenantByToNumber(toNumber);
-
-  fastify.log.info({ 
-    speech: speechResult, 
-    tenant: tenant?.tenant_id,
-    hasServicePortal: !!tenant?.advanced_features?.service_portal,
-    hasQuoteSystem: !!tenant?.advanced_features?.quote_system
-  }, "Processing speech");
-
-  const response = new twiml();
-
-  if (!speechResult) {
-    response.say("I didn't catch that clearly. Could you please repeat what you need? I'm still here to help.");
-    response.gather({
-      input: "speech",
-      action: "/handle-speech",
-      method: "POST",
-      timeout: 10,
-      speechTimeout: "auto"
-    });
-    response.say("I'm waiting for your response.");
-    reply.type("text/xml").send(response.toString());
-    return;
-  }
-
-  try {
-    const lowerSpeech = speechResult.toLowerCase();
-    let handled = false;
-
-    // Enhanced multilingual support (if enabled)
-    if (tenant?.advanced_features?.multilingual_support) {
-      if (lowerSpeech.includes('español') || lowerSpeech.includes('spanish') || 
-          lowerSpeech.includes('habla español') || lowerSpeech.includes('hablas español') ||
-          lowerSpeech.includes('en español') || lowerSpeech.includes('no hablo inglés') ||
-          lowerSpeech.includes('no hablo ingles')) {
-        response.say("Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Está en la esquina inferior derecha. Le envío el enlace por mensaje de texto ahora.");
-        const websiteLinks = [tenant?.contact?.website || tenant?.website];
-        if (websiteLinks[0]) {
-          await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("¿Hay algo más en que pueda ayudarle?");
-        handled = true;
-      }
-    }
-    
-    // Website/Instagram requests
-    if (!handled && (lowerSpeech.includes('website') || lowerSpeech.includes('web site') ||
-         lowerSpeech.includes('online') || lowerSpeech.includes('url'))) {
-      response.say("I'm texting you our website link now so you can easily access it.");
-      const websiteLinks = [tenant?.contact?.website || tenant?.website];
-      if (websiteLinks[0]) {
-        await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
-      }
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-    
-    else if (!handled && (lowerSpeech.includes('instagram') || lowerSpeech.includes('insta') ||
-             lowerSpeech.includes('social media'))) {
-      response.say("I'm texting you our Instagram link now.");
-      const instaLinks = [tenant?.contact?.instagram_url || tenant?.contact?.instagram_handle];
-      if (instaLinks[0]) {
-        await sendLinksViaSMS(fromNumber, toNumber, instaLinks, tenant, 'instagram');
-      }
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-    
-    // DYNAMIC APPOINTMENT BOOKING based on tenant capabilities
-    if (!handled && (lowerSpeech.includes('need an appointment') || lowerSpeech.includes('need appointment') ||
-         lowerSpeech.includes('want an appointment') || lowerSpeech.includes('want appointment') ||
-         lowerSpeech.includes('book an appointment') || lowerSpeech.includes('book appointment') ||
-         lowerSpeech.includes('schedule an appointment') || lowerSpeech.includes('schedule appointment') ||
-         lowerSpeech.includes('looking for slot') || lowerSpeech.includes('slot availability') ||
-         lowerSpeech.includes('slots available') || lowerSpeech.includes('availability'))) {
-      
-      if (tenant?.advanced_features?.service_portal && tenant?.advanced_features?.new_vs_returning_flow) {
-        // Use advanced flow for quote-based salons (like Loc Repair Clinic)
-        response.say("Are you a new client or a returning client?");
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Please let me know if you're new or returning so I can help you book the right way.");
-      } else {
-        // Use simple flow for direct booking salons
-        response.say("What service are you looking for? I can help you get booked.");
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Please let me know what service you need.");
-      }
-      handled = true;
-    }
-    
-    // Handle new/returning client responses (only for advanced flow)
-    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
-      if (lowerSpeech.includes('new client') || lowerSpeech.includes('first time') || 
-           lowerSpeech.includes('never been') || lowerSpeech.includes('new customer')) {
-        response.say("Welcome! Since you're a new client, I'm texting you our service portal where you can get a personalized quote for your specific loc needs.");
-        const servicePortalLink = tenant?.service_portal?.url || tenant?.booking?.main_url;
-        if (servicePortalLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('returning client') || lowerSpeech.includes('been here before') ||
-               lowerSpeech.includes('existing client') || lowerSpeech.includes('regular client') ||
-               lowerSpeech.includes('come here before') || lowerSpeech.includes('returning customer')) {
-        response.say("Great! Since you're a returning client, what service do you usually get? I can send you a direct booking link for your maintenance appointments.");
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Which service would you like to book?");
-        handled = true;
-      }
-    }
-    
-    // CRITICAL FIX: Handle returning client service selection responses with DIRECT BOOKING LINKS
-    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
-      if (lowerSpeech.includes('retwist') || lowerSpeech.includes('palm roll')) {
-        response.say("Perfect! I'm texting you the direct booking link for your retwist maintenance appointment.");
-        const bookingLink = tenant?.booking?.maintenance_links?.retwist || tenant?.maintenance_booking_links?.links?.retwist;
-        if (bookingLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'retwist_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('wick')) {
-        response.say("Perfect! I'm texting you the direct booking link for your wick loc maintenance appointment.");
-        const bookingLink = tenant?.booking?.maintenance_links?.wick || tenant?.maintenance_booking_links?.links?.wick;
-        if (bookingLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'wick_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('interlock')) {
-        response.say("Perfect! I'm texting you the direct booking link for your interlock maintenance appointment.");
-        const bookingLink = tenant?.booking?.maintenance_links?.interlock || tenant?.maintenance_booking_links?.links?.interlock;
-        if (bookingLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'interlock_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('sister lock') || 
-               lowerSpeech.includes('microlock') || lowerSpeech.includes('micro lock')) {
-        response.say("Perfect! I'm texting you the direct booking link for your sisterlock maintenance appointment.");
-        const bookingLink = tenant?.booking?.maintenance_links?.sisterlock || tenant?.maintenance_booking_links?.links?.sisterlock;
-        if (bookingLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'sisterlock_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('crochet')) {
-        response.say("Perfect! I'm texting you the direct booking link for your crochet roots maintenance appointment.");
-        const bookingLink = tenant?.booking?.maintenance_links?.crochet || tenant?.maintenance_booking_links?.links?.crochet;
-        if (bookingLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'crochet_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-      
-      else if (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot') || lowerSpeech.includes('bald')) {
-        response.say("Perfect! I'm texting you the direct booking link for your bald coverage maintenance appointment.");
-        const bookingLink = tenant?.booking?.maintenance_links?.bald_coverage || tenant?.maintenance_booking_links?.links?.bald_coverage;
-        if (bookingLink) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'bald_coverage_booking');
-        }
-        response.gather({
-          input: "speech",
-          action: "/handle-speech",
-          method: "POST",
-          timeout: 12,
-          speechTimeout: "auto"
-        });
-        response.say("Is there anything else I can help you with?");
-        handled = true;
-      }
-    }
-    
-    // Handle general service requests (for new clients or simple salons)
-    const serviceHandlers = [
-      { keywords: ['retwist', 'palm roll'], serviceType: 'retwist' },
-      { keywords: ['wick'], serviceType: 'wick' },
-      { keywords: ['interlock'], serviceType: 'interlock' },
-      { keywords: ['sisterlock', 'sister lock', 'microlock', 'micro lock'], serviceType: 'sisterlock' },
-      { keywords: ['crochet'], serviceType: 'crochet' },
-      { keywords: ['bald coverage', 'bald spot', 'bald'], serviceType: 'bald_coverage' }
-    ];
-    
-    if (!handled) {
-      for (const handler of serviceHandlers) {
-        if (handler.keywords.some(keyword => lowerSpeech.includes(keyword))) {
-          const bookingInfo = getServiceBookingLink(handler.serviceType, tenant, false); // false = not returning client context
-          
-          if (bookingInfo.url) {
-            let responseMessage = "";
-            let smsServiceType = "";
-            
-            if (bookingInfo.type === 'booking') {
-              responseMessage = `Perfect! I'm texting you the booking link for ${handler.serviceType.replace('_', ' ')} service.`;
-              smsServiceType = `${handler.serviceType}_booking`;
-            } else if (bookingInfo.type === 'quote') {
-              responseMessage = `I'm texting you the quote link for ${handler.serviceType.replace('_', ' ')} service.`;
-              smsServiceType = `${handler.serviceType}_maintenance`;
-            } else if (bookingInfo.type === 'consultation') {
-              responseMessage = `For ${handler.serviceType.replace('_', ' ')} service, let's start with a consultation. I'm texting you the consultation booking link.`;
-              smsServiceType = 'consultation_booking';
-            } else {
-              responseMessage = `I'm texting you the link for ${handler.serviceType.replace('_', ' ')} service.`;
-              smsServiceType = 'general';
-            }
-            
-            response.say(responseMessage);
-            await sendLinksViaSMS(fromNumber, toNumber, [bookingInfo.url], tenant, smsServiceType);
-          } else {
-            response.say(`We offer ${handler.serviceType.replace('_', ' ')} service. Please call us to schedule.`);
-          }
-          
-          response.gather({
-            input: "speech",
-            action: "/handle-speech",
-            method: "POST",
-            timeout: 12,
-            speechTimeout: "auto"
-          });
-          response.say("Is there anything else I can help you with?");
-          handled = true;
-          break;
-        }
-      }
-    }
-
-    // Running late notification
-    if (!handled && (lowerSpeech.includes('running late') || 
-        lowerSpeech.includes('running behind') ||
-        lowerSpeech.includes('late for') ||
-        (lowerSpeech.includes('late') && lowerSpeech.includes('appointment')))) {
-      
-      const lateResponse = tenant?.custom_responses?.running_late || 
-                          tenant?.quick_responses?.running_late ||
-                          `Thanks for the update! ${tenant?.loctician_name || 'The stylist'} has been informed you're running behind.`;
-      response.say(lateResponse);
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-
-// Training program inquiries (if available)
-    if (!handled && tenant?.advanced_features?.training_program && 
-        (lowerSpeech.includes('training') || lowerSpeech.includes('course') || 
-         lowerSpeech.includes('teach') || lowerSpeech.includes('learn'))) {
-      
-      const trainingInfo = tenant?.training_program;
-      let trainingResponse = `Yes, we offer training. `;
-      
-      if (trainingInfo?.cost) {
-        trainingResponse += `It's ${trainingInfo.cost}. `;
-      }
-      if (trainingInfo?.signup_method) {
-        trainingResponse += `${trainingInfo.signup_method}.`;
-      } else {
-        trainingResponse += "Contact us for enrollment details.";
-      }
-      
-      response.say(trainingResponse);
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-    
-    // Hours inquiry with follow-up
-    if (!handled && (lowerSpeech.includes('hour') || lowerSpeech.includes('open') || lowerSpeech.includes('close'))) {
-      const hoursResponse = tenant?.custom_responses?.hours_with_portal || 
-                           tenant?.hours?.hours_string || 
-                           "Please call during business hours for availability.";
-      
-      response.say(hoursResponse);
-      
-      // If they have a service portal, send it
-      if (tenant?.advanced_features?.service_portal && tenant?.service_portal?.url) {
-        const portalLinks = [tenant.service_portal.url];
-        await sendLinksViaSMS(fromNumber, toNumber, portalLinks, tenant, 'service_portal');
-      }
-      
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-    
-    // Pricing-only requests
-    if (!handled && ((lowerSpeech.includes('price') || lowerSpeech.includes('cost') || lowerSpeech.includes('pricing') || lowerSpeech.includes('how much')) &&
-              !lowerSpeech.includes('appointment') && !lowerSpeech.includes('book') && !lowerSpeech.includes('schedule'))) {
-      
-      if (tenant?.advanced_features?.quote_system) {
-        response.say("Our pricing is quote-based since everyone's needs are different. I'm texting you our service portal where you can get personalized pricing for your specific loc needs.");
-        const bookingUrl = tenant?.service_portal?.url || tenant?.booking?.main_url;
-        if (bookingUrl) {
-          await sendLinksViaSMS(fromNumber, toNumber, [bookingUrl], tenant, 'service_portal');
-        }
-      } else if (tenant?.booking?.consultation_url) {
-        response.say("For pricing information, we recommend starting with a consultation. I'm texting you the consultation booking link.");
-        await sendLinksViaSMS(fromNumber, toNumber, [tenant.booking.consultation_url], tenant, 'consultation_booking');
-      } else {
-        response.say("For pricing information, please give us a call or visit our website.");
-        if (tenant?.contact?.website) {
-          await sendLinksViaSMS(fromNumber, toNumber, [tenant.contact.website], tenant, 'website');
-        }
-      }
-      
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-      response.say("Is there anything else I can help you with?");
-      handled = true;
-    }
-
-    // General appointment management (existing appointments only)
-    if (!handled) {
-      let requestType = 'lookup';
-      
-      if (lowerSpeech.includes('what time') || 
-          lowerSpeech.includes('when is') ||
-          lowerSpeech.includes('appointment time')) {
-        requestType = 'time';
-      } else if (lowerSpeech.includes('manage')) {
-        requestType = 'manage';
-      } else if (lowerSpeech.includes('cancel')) {
-        requestType = 'cancel';
-      } else if (lowerSpeech.includes('reschedule')) {
-        requestType = 'reschedule';
-      }
-
-      if (lowerSpeech.includes('appointment') && 
-          (lowerSpeech.includes('cancel') || lowerSpeech.includes('reschedule') ||
-           lowerSpeech.includes('manage') || lowerSpeech.includes('time') ||
-           lowerSpeech.includes('when') || lowerSpeech.includes('check'))) {
-        
-        const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
-          phone: fromNumber
-        }, requestType);
-        
-        if (appointmentResult.handled) {
-          response.say(appointmentResult.speech);
-          handled = true;
-          
-          // Send appointment lookup link for management requests
-          if (appointmentResult.data?.sendConfirmation) {
-            const appointmentLookupUrl = tenant?.contact?.appointment_lookup || 
-                                       tenant?.appointment_lookup_url ||
-                                       "https://www.example.com/appointment-lookup";
-            await sendLinksViaSMS(fromNumber, toNumber, [appointmentLookupUrl], tenant, 'appointment_lookup');
-          }
-          
-          response.gather({
-            input: "speech",
-            action: "/handle-speech",
-            method: "POST",
-            timeout: 12,
-            speechTimeout: "auto"
-          });
-          response.say("Is there anything else I can help you with?");
-        }
-      }
-    }
-
-    // Continue conversation with FIXED flow control
-    if (handled) {
-      // Only hang up for explicit goodbye phrases
-      if (lowerSpeech.includes('bye') || lowerSpeech.includes('goodbye') || 
-          lowerSpeech.includes('that\'s all') || lowerSpeech.includes('that is all') ||
-          lowerSpeech.includes('nothing else') || lowerSpeech.includes('no more') ||
-          lowerSpeech.includes('i\'m done') || lowerSpeech.includes('im done') ||
-          lowerSpeech.includes('have a good day') || lowerSpeech.includes('talk to you later') ||
-          (lowerSpeech.includes('no') && (lowerSpeech.includes('thank') || lowerSpeech.includes('good')))) {
-        response.say("You're welcome! Have a great day!");
-        response.hangup();
-      } else if (lowerSpeech.includes('no') && lowerSpeech.length <= 15 && 
-                 !lowerSpeech.includes('english') && !lowerSpeech.includes('problem')) {
-        response.say("Looks like you're all set! Feel free to call back anytime if you need help. Have a great day!");
-        response.hangup();
-      }
-    } else {
-      // If not handled, use OpenAI with tenant-specific prompts
-      const knowledgeText = loadKnowledgeFor(tenant);
-      const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
-
-      const completion = await openai.chat.completions.create({
-        model: tenant?.voice_config?.model || tenant?.model || "gpt-4o-mini",
-        temperature: tenant?.voice_config?.temperature || tenant?.temperature || 0.7,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: speechResult }
-        ],
-        max_tokens: 100
-      });
-
-      const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
-        "I'm sorry, I couldn't process that right now.";
-      
-      // Check for URLs in the AI response and send via SMS if configured
-      const urls = extractUrls(aiResponse);
-      if (urls.length > 0) {
-        await sendLinksViaSMS(fromNumber, toNumber, urls, tenant, 'general');
-        const cleanResponse = aiResponse.replace(/(https?:\/\/[^\s]+)/g, '').trim();
-        response.say(`${cleanResponse} I'm texting you the link now.`);
-      } else {
-        response.say(aiResponse);
-      }
-
-      response.gather({
-        input: "speech",
-        action: "/handle-speech",
-        method: "POST",
-        timeout: 12,
-        speechTimeout: "auto"
-      });
-
-      response.say("Is there anything else I can help you with?");
-    }
-
-  } catch (err) {
-    fastify.log.error({ err }, "Speech processing error");
-    response.say("I'm having a technical issue. Let me try again - what did you need help with?");
-    response.gather({
-      input: "speech",
-      action: "/handle-speech",
-      method: "POST",
-      timeout: 10,
-      speechTimeout: "auto"
-    });
-    response.say("I'm listening.");
-  }
 
   reply.type("text/xml").send(response.toString());
 });
@@ -1180,6 +731,7 @@ fastify.get("/test/:tenantId", async (req, reply) => {
     booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
     consultation_url: fullTenant?.booking?.consultation_url || "not configured",
     has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId),
+    elevenlabs_voice_id: fullTenant?.elevenlabs_voice_id || "using default",
     features: {
       multilingual_support: !!fullTenant?.advanced_features?.multilingual_support,
       new_vs_returning_flow: !!fullTenant?.advanced_features?.new_vs_returning_flow,
@@ -1223,8 +775,608 @@ fastify.get("/tenant-features/:tenantId", async (req, reply) => {
     has_quote_urls: !!(fullTenant?.services?.quote_urls || fullTenant?.quote_system?.urls),
     has_maintenance_links: !!(fullTenant?.maintenance_booking_links?.links || fullTenant?.booking?.maintenance_links),
     has_consultation: !!fullTenant?.booking?.consultation_url,
-    canonical_answers_count: fullTenant?.canonical_answers?.length || 0
+    canonical_answers_count: fullTenant?.canonical_answers?.length || 0,
+    elevenlabs_enabled: !!process.env.ELEVENLABS_API_KEY,
+    voice_configuration: {
+      has_custom_voice: !!fullTenant?.elevenlabs_voice_id,
+      voice_id: fullTenant?.elevenlabs_voice_id || "default",
+      fallback_enabled: true
+    }
   };
+});
+
+// Test ElevenLabs integration endpoint
+fastify.get("/test-voice/:tenantId", async (req, reply) => {
+  const baseTenant = TENANTS[req.params.tenantId];
+  if (!baseTenant) {
+    return { error: "Tenant not found" };
+  }
+  
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+  const testText = req.query.text || "Hello! This is a test of your salon's voice bot. How does this sound?";
+  
+  try {
+    const audioBuffer = await generateElevenLabsAudio(testText, fullTenant);
+    
+    if (audioBuffer) {
+      // Save test audio file
+      const testFilename = `test_voice_${Date.now()}.mp3`;
+      const testPath = `/tmp/${testFilename}`;
+      fs.writeFileSync(testPath, Buffer.from(audioBuffer));
+      
+      return {
+        status: "success",
+        message: "ElevenLabs voice generation successful",
+        audio_url: `https://locsync-q7z9.onrender.com/audio/${testFilename}`,
+        voice_id: fullTenant?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || "default",
+        test_text: testText
+      };
+    } else {
+      return {
+        status: "fallback",
+        message: "ElevenLabs failed, would use Twilio TTS fallback",
+        elevenlabs_configured: !!process.env.ELEVENLABS_API_KEY
+      };
+    }
+  } catch (error) {
+    fastify.log.error({ err: error }, "Voice test error");
+    return {
+      status: "error",
+      message: "Voice test failed",
+      error: error.message,
+      elevenlabs_configured: !!process.env.ELEVENLABS_API_KEY
+    };
+  }
+});
+
+// Handle speech input - DYNAMIC based on tenant capabilities with RETURNING CLIENT FIX
+fastify.post("/handle-speech", async (req, reply) => {
+  const speechResult = req.body?.SpeechResult?.trim() || "";
+  const toNumber = (req.body?.To || "").trim();
+  const fromNumber = (req.body?.From || "").trim();
+  const tenant = getTenantByToNumber(toNumber);
+
+  fastify.log.info({ 
+    speech: speechResult, 
+    tenant: tenant?.tenant_id,
+    hasServicePortal: !!tenant?.advanced_features?.service_portal,
+    hasQuoteSystem: !!tenant?.advanced_features?.quote_system,
+    elevenLabsEnabled: !!process.env.ELEVENLABS_API_KEY
+  }, "Processing speech");
+
+  const response = new twiml();
+
+  if (!speechResult) {
+    await respondWithNaturalVoice(response, "I didn't catch that clearly. Could you please repeat what you need? I'm still here to help.", tenant);
+    response.gather({
+      input: "speech",
+      action: "/handle-speech",
+      method: "POST",
+      timeout: 10,
+      speechTimeout: "auto"
+    });
+    await respondWithNaturalVoice(response, "I'm waiting for your response.", tenant);
+    reply.type("text/xml").send(response.toString());
+    return;
+  }
+
+  try {
+    const lowerSpeech = speechResult.toLowerCase();
+    let handled = false;
+
+    // Enhanced multilingual support (if enabled)
+    if (tenant?.advanced_features?.multilingual_support) {
+      if (lowerSpeech.includes('español') || lowerSpeech.includes('spanish') || 
+          lowerSpeech.includes('habla español') || lowerSpeech.includes('hablas español') ||
+          lowerSpeech.includes('en español') || lowerSpeech.includes('no hablo inglés') ||
+          lowerSpeech.includes('no hablo ingles')) {
+        await respondWithNaturalVoice(response, "Para soporte en español, puede usar nuestro chat bot en nuestro sitio web. Está en la esquina inferior derecha. Le envío el enlace por mensaje de texto ahora.", tenant);
+        const websiteLinks = [tenant?.contact?.website || tenant?.website];
+        if (websiteLinks[0]) {
+          await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "¿Hay algo más en que pueda ayudarle?", tenant);
+        handled = true;
+      }
+    }
+    
+    // Website/Instagram requests
+    if (!handled && (lowerSpeech.includes('website') || lowerSpeech.includes('web site') ||
+         lowerSpeech.includes('online') || lowerSpeech.includes('url'))) {
+      await respondWithNaturalVoice(response, "I'm texting you our website link now so you can easily access it.", tenant);
+      const websiteLinks = [tenant?.contact?.website || tenant?.website];
+      if (websiteLinks[0]) {
+        await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      }
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+    
+    else if (!handled && (lowerSpeech.includes('instagram') || lowerSpeech.includes('insta') ||
+             lowerSpeech.includes('social media'))) {
+      await respondWithNaturalVoice(response, "I'm texting you our Instagram link now.", tenant);
+      const instaLinks = [tenant?.contact?.instagram_url || tenant?.contact?.instagram_handle];
+      if (instaLinks[0]) {
+        await sendLinksViaSMS(fromNumber, toNumber, instaLinks, tenant, 'instagram');
+      }
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+    
+    // DYNAMIC APPOINTMENT BOOKING based on tenant capabilities
+    if (!handled && (lowerSpeech.includes('need an appointment') || lowerSpeech.includes('need appointment') ||
+         lowerSpeech.includes('want an appointment') || lowerSpeech.includes('want appointment') ||
+         lowerSpeech.includes('book an appointment') || lowerSpeech.includes('book appointment') ||
+         lowerSpeech.includes('schedule an appointment') || lowerSpeech.includes('schedule appointment') ||
+         lowerSpeech.includes('looking for slot') || lowerSpeech.includes('slot availability') ||
+         lowerSpeech.includes('slots available') || lowerSpeech.includes('availability'))) {
+      
+      if (tenant?.advanced_features?.service_portal && tenant?.advanced_features?.new_vs_returning_flow) {
+        // Use advanced flow for quote-based salons (like Loc Repair Clinic)
+        await respondWithNaturalVoice(response, "Are you a new client or a returning client?", tenant);
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Please let me know if you're new or returning so I can help you book the right way.", tenant);
+      } else {
+        // Use simple flow for direct booking salons
+        await respondWithNaturalVoice(response, "What service are you looking for? I can help you get booked.", tenant);
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Please let me know what service you need.", tenant);
+      }
+      handled = true;
+    }
+    
+    // Handle new/returning client responses (only for advanced flow)
+    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
+      if (lowerSpeech.includes('new client') || lowerSpeech.includes('first time') || 
+           lowerSpeech.includes('never been') || lowerSpeech.includes('new customer')) {
+        await respondWithNaturalVoice(response, "Welcome! Since you're a new client, I'm texting you our service portal where you can get a personalized quote for your specific loc needs.", tenant);
+        const servicePortalLink = tenant?.service_portal?.url || tenant?.booking?.main_url;
+        if (servicePortalLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('returning client') || lowerSpeech.includes('been here before') ||
+               lowerSpeech.includes('existing client') || lowerSpeech.includes('regular client') ||
+               lowerSpeech.includes('come here before') || lowerSpeech.includes('returning customer')) {
+        await respondWithNaturalVoice(response, "Great! Since you're a returning client, what service do you usually get? I can send you a direct booking link for your maintenance appointments.", tenant);
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Which service would you like to book?", tenant);
+        handled = true;
+      }
+    }
+    
+    // CRITICAL FIX: Handle returning client service selection responses with DIRECT BOOKING LINKS
+    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
+      if (lowerSpeech.includes('retwist') || lowerSpeech.includes('palm roll')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your retwist maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.retwist || tenant?.maintenance_booking_links?.links?.retwist;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'retwist_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('wick')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your wick loc maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.wick || tenant?.maintenance_booking_links?.links?.wick;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'wick_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('interlock')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your interlock maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.interlock || tenant?.maintenance_booking_links?.links?.interlock;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'interlock_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('sister lock') || 
+               lowerSpeech.includes('microlock') || lowerSpeech.includes('micro lock')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your sisterlock maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.sisterlock || tenant?.maintenance_booking_links?.links?.sisterlock;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'sisterlock_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('crochet')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your crochet roots maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.crochet || tenant?.maintenance_booking_links?.links?.crochet;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'crochet_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot') || lowerSpeech.includes('bald')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your bald coverage maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.bald_coverage || tenant?.maintenance_booking_links?.links?.bald_coverage;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'bald_coverage_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+    }
+    
+    // Handle general service requests (for new clients or simple salons)
+    const serviceHandlers = [
+      { keywords: ['retwist', 'palm roll'], serviceType: 'retwist' },
+      { keywords: ['wick'], serviceType: 'wick' },
+      { keywords: ['interlock'], serviceType: 'interlock' },
+      { keywords: ['sisterlock', 'sister lock', 'microlock', 'micro lock'], serviceType: 'sisterlock' },
+      { keywords: ['crochet'], serviceType: 'crochet' },
+      { keywords: ['bald coverage', 'bald spot', 'bald'], serviceType: 'bald_coverage' }
+    ];
+    
+    if (!handled) {
+      for (const handler of serviceHandlers) {
+        if (handler.keywords.some(keyword => lowerSpeech.includes(keyword))) {
+          const bookingInfo = getServiceBookingLink(handler.serviceType, tenant, false); // false = not returning client context
+          
+          if (bookingInfo.url) {
+            let responseMessage = "";
+            let smsServiceType = "";
+            
+            if (bookingInfo.type === 'booking') {
+              responseMessage = `Perfect! I'm texting you the booking link for ${handler.serviceType.replace('_', ' ')} service.`;
+              smsServiceType = `${handler.serviceType}_booking`;
+            } else if (bookingInfo.type === 'quote') {
+              responseMessage = `I'm texting you the quote link for ${handler.serviceType.replace('_', ' ')} service.`;
+              smsServiceType = `${handler.serviceType}_maintenance`;
+            } else if (bookingInfo.type === 'consultation') {
+              responseMessage = `For ${handler.serviceType.replace('_', ' ')} service, let's start with a consultation. I'm texting you the consultation booking link.`;
+              smsServiceType = 'consultation_booking';
+            } else {
+              responseMessage = `I'm texting you the link for ${handler.serviceType.replace('_', ' ')} service.`;
+              smsServiceType = 'general';
+            }
+            
+            await respondWithNaturalVoice(response, responseMessage, tenant);
+            await sendLinksViaSMS(fromNumber, toNumber, [bookingInfo.url], tenant, smsServiceType);
+          } else {
+            await respondWithNaturalVoice(response, `We offer ${handler.serviceType.replace('_', ' ')} service. Please call us to schedule.`, tenant);
+          }
+          
+          response.gather({
+            input: "speech",
+            action: "/handle-speech",
+            method: "POST",
+            timeout: 12,
+            speechTimeout: "auto"
+          });
+          await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+          handled = true;
+          break;
+        }
+      }
+    }
+
+    // Running late notification
+    if (!handled && (lowerSpeech.includes('running late') || 
+        lowerSpeech.includes('running behind') ||
+        lowerSpeech.includes('late for') ||
+        (lowerSpeech.includes('late') && lowerSpeech.includes('appointment')))) {
+      
+      const lateResponse = tenant?.custom_responses?.running_late || 
+                          tenant?.quick_responses?.running_late ||
+                          `Thanks for the update! ${tenant?.loctician_name || 'The stylist'} has been informed you're running behind.`;
+      await respondWithNaturalVoice(response, lateResponse, tenant);
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+
+    // Training program inquiries (if available)
+    if (!handled && tenant?.advanced_features?.training_program && 
+        (lowerSpeech.includes('training') || lowerSpeech.includes('course') || 
+         lowerSpeech.includes('teach') || lowerSpeech.includes('learn'))) {
+      
+      const trainingInfo = tenant?.training_program;
+      let trainingResponse = `Yes, we offer training. `;
+      
+      if (trainingInfo?.cost) {
+        trainingResponse += `It's ${trainingInfo.cost}. `;
+      }
+      if (trainingInfo?.signup_method) {
+        trainingResponse += `${trainingInfo.signup_method}.`;
+      } else {
+        trainingResponse += "Contact us for enrollment details.";
+      }
+      
+      await respondWithNaturalVoice(response, trainingResponse, tenant);
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+    
+    // Hours inquiry with follow-up
+    if (!handled && (lowerSpeech.includes('hour') || lowerSpeech.includes('open') || lowerSpeech.includes('close'))) {
+      const hoursResponse = tenant?.custom_responses?.hours_with_portal || 
+                           tenant?.hours?.hours_string || 
+                           "Please call during business hours for availability.";
+      
+      await respondWithNaturalVoice(response, hoursResponse, tenant);
+      
+      // If they have a service portal, send it
+      if (tenant?.advanced_features?.service_portal && tenant?.service_portal?.url) {
+        const portalLinks = [tenant.service_portal.url];
+        await sendLinksViaSMS(fromNumber, toNumber, portalLinks, tenant, 'service_portal');
+      }
+      
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+    
+    // Pricing-only requests
+    if (!handled && ((lowerSpeech.includes('price') || lowerSpeech.includes('cost') || lowerSpeech.includes('pricing') || lowerSpeech.includes('how much')) &&
+              !lowerSpeech.includes('appointment') && !lowerSpeech.includes('book') && !lowerSpeech.includes('schedule'))) {
+      
+      if (tenant?.advanced_features?.quote_system) {
+        await respondWithNaturalVoice(response, "Our pricing is quote-based since everyone's needs are different. I'm texting you our service portal where you can get personalized pricing for your specific loc needs.", tenant);
+        const bookingUrl = tenant?.service_portal?.url || tenant?.booking?.main_url;
+        if (bookingUrl) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingUrl], tenant, 'service_portal');
+        }
+      } else if (tenant?.booking?.consultation_url) {
+        await respondWithNaturalVoice(response, "For pricing information, we recommend starting with a consultation. I'm texting you the consultation booking link.", tenant);
+        await sendLinksViaSMS(fromNumber, toNumber, [tenant.booking.consultation_url], tenant, 'consultation_booking');
+      } else {
+        await respondWithNaturalVoice(response, "For pricing information, please give us a call or visit our website.", tenant);
+        if (tenant?.contact?.website) {
+          await sendLinksViaSMS(fromNumber, toNumber, [tenant.contact.website], tenant, 'website');
+        }
+      }
+      
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+
+    // General appointment management (existing appointments only)
+    if (!handled) {
+      let requestType = 'lookup';
+      
+      if (lowerSpeech.includes('what time') || 
+          lowerSpeech.includes('when is') ||
+          lowerSpeech.includes('appointment time')) {
+        requestType = 'time';
+      } else if (lowerSpeech.includes('manage')) {
+        requestType = 'manage';
+      } else if (lowerSpeech.includes('cancel')) {
+        requestType = 'cancel';
+      } else if (lowerSpeech.includes('reschedule')) {
+        requestType = 'reschedule';
+      }
+
+      if (lowerSpeech.includes('appointment') && 
+          (lowerSpeech.includes('cancel') || lowerSpeech.includes('reschedule') ||
+           lowerSpeech.includes('manage') || lowerSpeech.includes('time') ||
+           lowerSpeech.includes('when') || lowerSpeech.includes('check'))) {
+        
+        const appointmentResult = await callAirtableAPI(tenant, 'lookup_appointments', {
+          phone: fromNumber
+        }, requestType);
+        
+        if (appointmentResult.handled) {
+          await respondWithNaturalVoice(response, appointmentResult.speech, tenant);
+          handled = true;
+          
+          // Send appointment lookup link for management requests
+          if (appointmentResult.data?.sendConfirmation) {
+            const appointmentLookupUrl = tenant?.contact?.appointment_lookup || 
+                                       tenant?.appointment_lookup_url ||
+                                       "https://www.example.com/appointment-lookup";
+            await sendLinksViaSMS(fromNumber, toNumber, [appointmentLookupUrl], tenant, 'appointment_lookup');
+          }
+          
+          response.gather({
+            input: "speech",
+            action: "/handle-speech",
+            method: "POST",
+            timeout: 12,
+            speechTimeout: "auto"
+          });
+          await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        }
+      }
+    }
+
+    // Continue conversation with FIXED flow control
+    if (handled) {
+      // Only hang up for explicit goodbye phrases
+      if (lowerSpeech.includes('bye') || lowerSpeech.includes('goodbye') || 
+          lowerSpeech.includes('that\'s all') || lowerSpeech.includes('that is all') ||
+          lowerSpeech.includes('nothing else') || lowerSpeech.includes('no more') ||
+          lowerSpeech.includes('i\'m done') || lowerSpeech.includes('im done') ||
+          lowerSpeech.includes('have a good day') || lowerSpeech.includes('talk to you later') ||
+          (lowerSpeech.includes('no') && (lowerSpeech.includes('thank') || lowerSpeech.includes('good')))) {
+        await respondWithNaturalVoice(response, "You're welcome! Have a great day!", tenant);
+        response.hangup();
+      } else if (lowerSpeech.includes('no') && lowerSpeech.length <= 15 && 
+                 !lowerSpeech.includes('english') && !lowerSpeech.includes('problem')) {
+        await respondWithNaturalVoice(response, "Looks like you're all set! Feel free to call back anytime if you need help. Have a great day!", tenant);
+        response.hangup();
+      }
+    } else {
+      // If not handled, use OpenAI with tenant-specific prompts
+      const knowledgeText = loadKnowledgeFor(tenant);
+      const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
+
+      const completion = await openai.chat.completions.create({
+        model: tenant?.voice_config?.model || tenant?.model || "gpt-4o-mini",
+        temperature: tenant?.voice_config?.temperature || tenant?.temperature || 0.7,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: speechResult }
+        ],
+        max_tokens: 100
+      });
+
+      const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
+        "I'm sorry, I couldn't process that right now.";
+      
+      // Check for URLs in the AI response and send via SMS if configured
+      const urls = extractUrls(aiResponse);
+      if (urls.length > 0) {
+        await sendLinksViaSMS(fromNumber, toNumber, urls, tenant, 'general');
+        const cleanResponse = aiResponse.replace(/(https?:\/\/[^\s]+)/g, '').trim();
+        await respondWithNaturalVoice(response, `${cleanResponse} I'm texting you the link now.`, tenant);
+      } else {
+        await respondWithNaturalVoice(response, aiResponse, tenant);
+      }
+
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+    }
+
+  } catch (err) {
+    fastify.log.error({ err }, "Speech processing error");
+    await respondWithNaturalVoice(response, "I'm having a technical issue. Let me try again - what did you need help with?", tenant);
+    response.gather({
+      input: "speech",
+      action: "/handle-speech",
+      method: "POST",
+      timeout: 10,
+      speechTimeout: "auto"
+    });
+    await respondWithNaturalVoice(response, "I'm listening.", tenant);
+  }
+
+  reply.type("text/xml").send(response.toString());
 });
 
 // ---------------- START SERVER ----------------
@@ -1235,5 +1387,6 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   }
   console.log(`🚀 LocSync Voice Bot - Multi-Tenant Edition running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
-  console.log(`✨ FIXED: Returning clients now get direct booking links, not quotes!`);
+  console.log(`🎤 ElevenLabs integration: ${process.env.ELEVENLABS_API_KEY ? "ENABLED" : "DISABLED (using Twilio TTS fallback)"}`);
+  console.log(`✨ UPGRADE: Professional voice quality with natural conversations!`);
 });
