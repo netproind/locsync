@@ -628,6 +628,179 @@ fastify.get("/health", async () => {
   return { status: "healthy", timestamp: new Date().toISOString() };
 });
 
+// Add this to your existing index.js file (around line 200-300, after your other routes)
+
+// Instagram Webhook Verification (Meta requires this)
+fastify.get("/webhook/instagram", async (req, reply) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  
+  console.log('Instagram webhook verification attempt:', { mode, token, challenge });
+  
+  if (mode && token) {
+    if (mode === 'subscribe' && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
+      console.log('✅ Instagram webhook verified successfully');
+      reply.code(200).send(challenge);
+    } else {
+      console.log('❌ Instagram webhook verification failed - invalid token');
+      reply.code(403).send('Forbidden');
+    }
+  } else {
+    console.log('❌ Instagram webhook verification failed - missing parameters');
+    reply.code(400).send('Bad Request');
+  }
+});
+
+// Instagram Webhook Handler (receives actual messages)
+fastify.post("/webhook/instagram", async (req, reply) => {
+  const body = req.body;
+  
+  console.log('📨 Instagram webhook received:', JSON.stringify(body, null, 2));
+  
+  // Verify webhook signature (security requirement)
+  const signature = req.headers['x-hub-signature-256'];
+  if (!verifyInstagramSignature(JSON.stringify(body), signature)) {
+    console.log('❌ Invalid Instagram webhook signature');
+    return reply.code(403).send('Forbidden');
+  }
+  
+  if (body.object === 'instagram') {
+    try {
+      // Process Instagram messages
+      await Promise.all(body.entry.map(processInstagramEntry));
+      reply.code(200).send('EVENT_RECEIVED');
+    } catch (error) {
+      console.error('Error processing Instagram webhook:', error);
+      reply.code(500).send('Internal Server Error');
+    }
+  } else {
+    reply.code(404).send('Not Found');
+  }
+});
+
+// Process Instagram message entry
+async function processInstagramEntry(entry) {
+  const messaging = entry.messaging || [];
+  
+  for (const message of messaging) {
+    if (message.message && message.message.text) {
+      await handleInstagramMessage(entry.id, message);
+    }
+  }
+}
+
+// Handle incoming Instagram message
+async function handleInstagramMessage(instagramAccountId, message) {
+  const senderId = message.sender.id;
+  const messageText = message.message.text;
+  const timestamp = message.timestamp;
+  
+  console.log(`📱 Instagram message from ${senderId}: ${messageText}`);
+  
+  // Find tenant based on Instagram account ID
+  const tenant = findTenantByInstagramId(instagramAccountId);
+  
+  if (!tenant) {
+    console.log(`❌ No tenant found for Instagram account: ${instagramAccountId}`);
+    return;
+  }
+  
+  try {
+    // Use your existing OpenAI integration
+    const systemPrompt = `You are the virtual assistant for ${tenant.studio_name} with ${tenant.loctician_name}. 
+    This is an Instagram DM conversation. Keep responses under 1000 characters and conversational.
+    Always offer to text helpful links when appropriate.
+    Current platform: Instagram Direct Messages`;
+    
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.7,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: messageText }
+      ],
+      max_tokens: 200
+    });
+    
+    const aiResponse = completion.choices?.[0]?.message?.content?.trim();
+    
+    if (aiResponse) {
+      // Send response back to Instagram
+      await sendInstagramMessage(instagramAccountId, senderId, aiResponse);
+      
+      // Log conversation (optional)
+      console.log(`✅ Instagram response sent to ${senderId}: ${aiResponse}`);
+    }
+    
+  } catch (error) {
+    console.error(`❌ Error processing Instagram message:`, error);
+    
+    // Send fallback message
+    const fallbackMessage = `Thanks for your message! We're experiencing technical issues. Please call us at our main number.`;
+    await sendInstagramMessage(instagramAccountId, senderId, fallbackMessage);
+  }
+}
+
+// Find tenant by Instagram account ID
+function findTenantByInstagramId(instagramAccountId) {
+  // This will integrate with your existing tenant system
+  // For now, return a default tenant for testing
+  
+  const defaultTenant = {
+    tenant_id: "loc_repair_clinic",
+    studio_name: "Loc Repair Clinic",
+    loctician_name: "Yesha",
+    instagram_account_id: instagramAccountId
+  };
+  
+  return defaultTenant;
+}
+
+// Send message to Instagram user
+async function sendInstagramMessage(accountId, recipientId, message) {
+  // This will be implemented once you have Instagram access tokens
+  // For now, just log what would be sent
+  
+  console.log(`📤 Would send Instagram message to ${recipientId}: ${message}`);
+  
+  // TODO: Implement actual Instagram API call when you have access tokens
+  // const response = await axios.post('https://graph.facebook.com/v18.0/me/messages', {
+  //   recipient: { id: recipientId },
+  //   message: { text: message.substring(0, 1000) }
+  // }, {
+  //   headers: {
+  //     'Authorization': `Bearer ${ACCESS_TOKEN}`,
+  //     'Content-Type': 'application/json'
+  //   }
+  // });
+}
+
+// Verify Instagram webhook signature (security)
+function verifyInstagramSignature(payload, signature) {
+  if (!signature || !process.env.INSTAGRAM_APP_SECRET) {
+    return false;
+  }
+  
+  const crypto = require('crypto');
+  const expectedSignature = crypto
+    .createHmac('sha256', process.env.INSTAGRAM_APP_SECRET)
+    .update(payload, 'utf8')
+    .digest('hex');
+    
+  return signature === `sha256=${expectedSignature}`;
+}
+
+// Add Instagram health check
+fastify.get("/instagram/health", async (req, reply) => {
+  reply.send({
+    status: "healthy",
+    service: "LocSync Instagram Integration",
+    timestamp: new Date().toISOString(),
+    webhook_url: "/webhook/instagram"
+  });
+});
+
 // ---------------- ELEVENLABS AUDIO SERVING ROUTE ----------------
 fastify.get('/audio/:filename', async (request, reply) => {
   try {
