@@ -156,7 +156,7 @@ ${(knowledgeText || "").slice(0, 8000)}`;
 const INSTAGRAM_CONFIG = {
   clientId: INSTAGRAM_APP_ID,
   clientSecret: INSTAGRAM_APP_SECRET,
-  redirectUri: `https://locsync-q7z9.onrender.com/auth/instagram/callback`
+  redirectUri: `https://locsync-q7z9.onrender.com/instagram/callback`
 };
 
 // Instagram Webhook Verification (Meta requirement)
@@ -272,7 +272,7 @@ fastify.get('/connect-instagram/:tenantId', async (req, reply) => {
 });
 
 // Step 3: Handle Instagram OAuth callback
-fastify.get('/auth/instagram/callback', async (req, reply) => {
+fastify.get('/instagram/callback', async (req, reply) => {
   const { code, state, error } = req.query;
   
   if (error) {
