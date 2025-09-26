@@ -264,7 +264,7 @@ fastify.get('/connect-instagram/:tenantId', async (req, reply) => {
   const instagramAuthUrl = new URL('https://api.instagram.com/oauth/authorize');
   instagramAuthUrl.searchParams.set('client_id', INSTAGRAM_CONFIG.clientId);
   instagramAuthUrl.searchParams.set('redirect_uri', 'https://locsync-q7z9.onrender.com/instagram/callback');
-  instagramAuthUrl.searchParams.set('scope', 'instagram_business_basic,instagram_business_manage_messages');
+  instagramAuthUrl.searchParams.set('scope', 'user_profile,user_media');
   instagramAuthUrl.searchParams.set('response_type', 'code');
   instagramAuthUrl.searchParams.set('state', state);
   
