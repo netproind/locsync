@@ -270,24 +270,48 @@ fastify.get('/connect-instagram/:tenantId', async (req, reply) => {
   
   reply.redirect(instagramAuthUrl.toString());
 });
+// REPLACE your current Instagram callback handler (lines 298-364) with this:
 
 // Step 3: Handle Instagram OAuth callback
 fastify.get('/instagram/callback', async (req, reply) => {
-  const { code, state, error } = req.query;
+  const { code, state, error, error_description } = req.query;
+  
+  // Enhanced logging
+  fastify.log.info({ 
+    code: code ? 'received' : 'missing', 
+    state, 
+    error,
+    error_description,
+    query: req.query 
+  }, "Instagram callback received");
   
   if (error) {
+    fastify.log.error({ error, error_description }, "Instagram OAuth error from user");
     return reply.type('text/html').send(`
       <h1>❌ Connection Failed</h1>
-      <p>Error: ${error}</p>
+      <p><strong>Error:</strong> ${error}</p>
+      <p><strong>Description:</strong> ${error_description || 'User denied access'}</p>
       <a href="/onboard/test_tenant">Try Again</a>
     `);
   }
- console.log('Token exchange request:', {
-  client_id: INSTAGRAM_CONFIG.clientId,
-  redirect_uri: INSTAGRAM_CONFIG.redirectUri,
-  code: code
-}); 
+  
+  if (!code) {
+    fastify.log.error("No authorization code received from Instagram");
+    return reply.type('text/html').send(`
+      <h1>❌ Connection Failed</h1>
+      <p>No authorization code received from Instagram</p>
+      <a href="/onboard/test_tenant">Try Again</a>
+    `);
+  }
+
+  console.log('Token exchange request:', {
+    client_id: INSTAGRAM_CONFIG.clientId,
+    redirect_uri: INSTAGRAM_CONFIG.redirectUri,
+    code: code ? code.substring(0, 20) + '...' : 'missing'
+  }); 
+  
   if (!state || !global.oauthStates?.has(state)) {
+    fastify.log.error({ state, hasStates: !!global.oauthStates }, "Invalid or missing state");
     return reply.type('text/html').send(`
       <h1>❌ Invalid State</h1>
       <p>Session expired or invalid. Please try again.</p>
@@ -299,10 +323,24 @@ fastify.get('/instagram/callback', async (req, reply) => {
   global.oauthStates.delete(state);
   
   try {
+    // CRITICAL: Check environment variables
+    if (!INSTAGRAM_CONFIG.clientId || !INSTAGRAM_CONFIG.clientSecret) {
+      throw new Error('Instagram app credentials not configured in environment variables');
+    }
+
+    fastify.log.info({ 
+      client_id: INSTAGRAM_CONFIG.clientId ? 'set' : 'missing',
+      client_secret: INSTAGRAM_CONFIG.clientSecret ? 'set' : 'missing',
+      redirect_uri: INSTAGRAM_CONFIG.redirectUri
+    }, "Attempting Instagram token exchange");
+
     // Exchange code for access token
     const tokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
       body: new URLSearchParams({
         client_id: INSTAGRAM_CONFIG.clientId,
         client_secret: INSTAGRAM_CONFIG.clientSecret,
@@ -314,19 +352,51 @@ fastify.get('/instagram/callback', async (req, reply) => {
     
     const tokenData = await tokenResponse.json();
     
-    if (tokenData.error) {
-      throw new Error(tokenData.error_message || tokenData.error);
+    fastify.log.info({ 
+      status: tokenResponse.status,
+      hasAccessToken: !!tokenData.access_token,
+      hasError: !!tokenData.error,
+      errorType: tokenData.error_type,
+      errorMessage: tokenData.error_message 
+    }, "Instagram token exchange response");
+    
+    // Enhanced error handling
+    if (!tokenResponse.ok || tokenData.error) {
+      const errorMsg = tokenData.error_message || tokenData.error_description || tokenData.error || 'Unknown Instagram API error';
+      
+      fastify.log.error({ 
+        status: tokenResponse.status,
+        error: tokenData.error,
+        error_type: tokenData.error_type,
+        error_message: tokenData.error_message,
+        error_description: tokenData.error_description,
+        full_response: tokenData
+      }, "Instagram token exchange failed");
+      
+      throw new Error(`Instagram API error: ${errorMsg}`);
     }
     
     const { access_token, user_id } = tokenData;
+    
+    if (!access_token || !user_id) {
+      throw new Error('Instagram API did not return access token or user ID');
+    }
+
+    fastify.log.info({ user_id, hasToken: !!access_token }, "Instagram token received successfully");
     
     // Get user profile information
     const profileResponse = await fetch(`https://graph.instagram.com/${user_id}?fields=id,username,name,account_type,profile_picture_url&access_token=${access_token}`);
     const profileData = await profileResponse.json();
     
-    if (profileData.error) {
-      throw new Error(profileData.error.message);
+    if (!profileResponse.ok || profileData.error) {
+      fastify.log.error({ profileError: profileData.error }, "Failed to get Instagram profile");
+      throw new Error(profileData.error?.message || 'Failed to get Instagram profile');
     }
+    
+    fastify.log.info({ 
+      username: profileData.username, 
+      account_type: profileData.account_type 
+    }, "Instagram profile retrieved successfully");
     
     // Store connected account info (in production use database)
     global.connectedAccounts = global.connectedAccounts || new Map();
@@ -340,11 +410,46 @@ fastify.get('/instagram/callback', async (req, reply) => {
     reply.redirect(`/dashboard/${stateData.tenantId}`);
     
   } catch (error) {
-    console.error('Instagram OAuth error:', error);
+    // This is where your line 324 error occurs - enhanced error handling
+    fastify.log.error({ 
+      error: error.message,
+      stack: error.stack,
+      code: code ? code.substring(0, 20) + '...' : 'missing',
+      state: state,
+      tenantId: stateData?.tenantId,
+      environment: {
+        client_id: INSTAGRAM_CONFIG.clientId ? 'set' : 'missing',
+        client_secret: INSTAGRAM_CONFIG.clientSecret ? 'set' : 'missing'
+      }
+    }, "Instagram OAuth error - detailed");
+    
     reply.type('text/html').send(`
-      <h1>❌ Connection Failed</h1>
-      <p>Error: ${error.message}</p>
-      <a href="/onboard/test_tenant">Try Again</a>
+      <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .error { background: #f8d7da; color: #721c24; padding: 20px; border-radius: 8px; margin: 20px 0; }
+            .error-details { background: #f1f3f4; padding: 15px; border-radius: 5px; margin: 15px 0; font-family: monospace; font-size: 12px; }
+            .btn { background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px; }
+          </style>
+        </head>
+        <body>
+          <h1>❌ Instagram Connection Failed</h1>
+          <div class="error">
+            <strong>Error Details:</strong>
+            <div class="error-details">
+              <strong>Message:</strong> ${error.message}<br>
+              <strong>Time:</strong> ${new Date().toISOString()}<br>
+              <strong>Code received:</strong> ${code ? 'Yes' : 'No'}<br>
+              <strong>State:</strong> ${state || 'Missing'}<br>
+              <strong>Tenant:</strong> ${stateData?.tenantId || 'Unknown'}
+            </div>
+          </div>
+          <p>The error has been logged for debugging. Please try again or contact support if the issue persists.</p>
+          <a href="/onboard/test_tenant" class="btn">Try Again</a>
+          <a href="/debug/instagram" class="btn">Debug Info</a>
+        </body>
+      </html>
     `);
   }
 });
