@@ -729,6 +729,96 @@ fastify.get("/test/:tenantId", async (req, reply) => {
   };
 });
 
+
+
+// Add these debug routes before your fastify.listen section:
+
+// Debug endpoint to check Instagram configuration
+fastify.get("/debug/instagram", async (req, reply) => {
+  return {
+    timestamp: new Date().toISOString(),
+    environment: {
+      INSTAGRAM_APP_ID: process.env.INSTAGRAM_APP_ID ? 'SET ✓' : 'MISSING ❌',
+      INSTAGRAM_APP_SECRET: process.env.INSTAGRAM_APP_SECRET ? 'SET ✓' : 'MISSING ❌',
+      INSTAGRAM_VERIFY_TOKEN: process.env.INSTAGRAM_VERIFY_TOKEN ? 'SET ✓' : 'MISSING ❌',
+      BASE_URL: 'https://locsync-q7z9.onrender.com'
+    },
+    configuration: {
+      client_id: INSTAGRAM_CONFIG.clientId || 'MISSING',
+      redirect_uri: INSTAGRAM_CONFIG.redirectUri,
+      auth_url: 'https://api.instagram.com/oauth/authorize',
+      token_url: 'https://api.instagram.com/oauth/access_token'
+    },
+    current_config: INSTAGRAM_CONFIG,
+    request_info: {
+      host: req.headers.host,
+      protocol: req.protocol
+    }
+  };
+});
+
+// Test Instagram API connectivity
+fastify.get("/debug/instagram/test-api", async (req, reply) => {
+  try {
+    const testResponse = await fetch('https://api.instagram.com/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: new URLSearchParams({
+        client_id: INSTAGRAM_CONFIG.clientId || 'missing',
+        client_secret: INSTAGRAM_CONFIG.clientSecret || 'missing',
+        grant_type: 'authorization_code',
+        redirect_uri: INSTAGRAM_CONFIG.redirectUri,
+        code: 'test_invalid_code_for_debugging'
+      }).toString()
+    });
+
+    const responseData = await testResponse.json();
+    
+    return {
+      test_purpose: "Uses invalid code to test API connectivity and see exact error response",
+      api_status: testResponse.status,
+      api_response: responseData,
+      connection_test: "SUCCESS - Can reach Instagram API",
+      config_check: {
+        client_id: INSTAGRAM_CONFIG.clientId ? 'configured' : 'missing',
+        client_secret: INSTAGRAM_CONFIG.clientSecret ? 'configured' : 'missing',
+        redirect_uri: INSTAGRAM_CONFIG.redirectUri
+      }
+    };
+  } catch (error) {
+    return {
+      error: "Failed to connect to Instagram API",
+      details: error.message,
+      network_issue: true
+    };
+  }
+});
+
+// Check environment variables
+fastify.get("/debug/env", async (req, reply) => {
+  return {
+    message: "Environment variables check",
+    instagram_vars: {
+      INSTAGRAM_APP_ID: process.env.INSTAGRAM_APP_ID ? 
+        `SET (${process.env.INSTAGRAM_APP_ID.substring(0, 8)}...)` : 
+        'NOT SET ❌',
+      INSTAGRAM_APP_SECRET: process.env.INSTAGRAM_APP_SECRET ? 
+        `SET (${process.env.INSTAGRAM_APP_SECRET.substring(0, 8)}...)` : 
+        'NOT SET ❌',
+      INSTAGRAM_VERIFY_TOKEN: process.env.INSTAGRAM_VERIFY_TOKEN ? 
+        `SET (${process.env.INSTAGRAM_VERIFY_TOKEN.substring(0, 8)}...)` : 
+        'NOT SET ❌'
+    },
+    current_values: {
+      clientId: INSTAGRAM_CONFIG.clientId || 'undefined',
+      clientSecret: INSTAGRAM_CONFIG.clientSecret ? 'set' : 'undefined',
+      redirectUri: INSTAGRAM_CONFIG.redirectUri
+    }
+  };
+});
 // ---------------- START SERVER ----------------
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
