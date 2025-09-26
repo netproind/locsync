@@ -282,7 +282,11 @@ fastify.get('/instagram/callback', async (req, reply) => {
       <a href="/onboard/test_tenant">Try Again</a>
     `);
   }
-  
+ console.log('Token exchange request:', {
+  client_id: INSTAGRAM_CONFIG.clientId,
+  redirect_uri: INSTAGRAM_CONFIG.redirectUri,
+  code: code
+}); 
   if (!state || !global.oauthStates?.has(state)) {
     return reply.type('text/html').send(`
       <h1>❌ Invalid State</h1>
