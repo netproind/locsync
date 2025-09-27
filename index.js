@@ -261,10 +261,10 @@ fastify.get('/connect-instagram/:tenantId', async (req, reply) => {
   global.oauthStates = global.oauthStates || new Map();
   global.oauthStates.set(state, { tenantId, timestamp: Date.now() });
   
-  const instagramAuthUrl = new URL('https://api.instagram.com/oauth/authorize');
+  const instagramAuthUrl = new URL('https://www.facebook.com/v18.0/dialog/oauth');
   instagramAuthUrl.searchParams.set('client_id', INSTAGRAM_CONFIG.clientId);
   instagramAuthUrl.searchParams.set('redirect_uri', 'https://locsync-q7z9.onrender.com/instagram/callback');
-  instagramAuthUrl.searchParams.set('scope', 'user_profile,user_media');
+  instagramAuthUrl.searchParams.set('scope', 'instagram_business_basic,instagram_business_manage_messages,pages_show_list,pages_read_engagement');
   instagramAuthUrl.searchParams.set('response_type', 'code');
   instagramAuthUrl.searchParams.set('state', state);
   
