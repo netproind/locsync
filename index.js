@@ -1,3 +1,4 @@
+
 import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import twilio from "twilio";
@@ -14,6 +15,7 @@ const {
   TWILIO_PHONE_NUMBER,
   OPENAI_API_KEY,
   AIRTABLE_PAT,
+  INSTAGRAM_VERIFY_TOKEN,
   PORT = 10000,
 } = process.env;
 
@@ -199,7 +201,6 @@ async function sendLinksViaSMS(fromNumber, toNumber, links, tenant, serviceType 
     fastify.log.error({ err, fromNumber, serviceType }, "Failed to send SMS");
   }
 }
-
 // FIXED: Function to get booking link based on service type and tenant capabilities
 function getServiceBookingLink(serviceType, tenant, isReturningClient = false) {
   // For returning clients with advanced flow, prioritize direct booking links
@@ -247,7 +248,7 @@ function getServiceBookingLink(serviceType, tenant, isReturningClient = false) {
 function normalizePhone(phone) {
   if (!phone) return '';
   return phone.replace(/\D/g, '').slice(-10);
-      }
+}
 
 // Load detailed tenant configuration
 function loadTenantDetails(tenantId) {
@@ -259,6 +260,13 @@ function loadTenantDetails(tenantId) {
     const detailsPath = `./tenants/${tenantId}/config.json`;
     if (fs.existsSync(detailsPath)) {
       const details = JSON.parse(fs.readFileSync(detailsPath, "utf8"));
+      
+      // Validate Instagram configuration
+      if (details.instagram?.access_token) {
+        details.instagram.webhook_enabled = true;
+        fastify.log.info({ tenantId, instagram: details.instagram.username }, "Instagram integration enabled");
+      }
+      
       TENANT_DETAILS.set(tenantId, details);
       return details;
     }
@@ -300,6 +308,18 @@ function getTenantByToNumber(toNumber) {
   }
   
   return baseTenant;
+}
+
+// NEW: Helper function to find tenant by Instagram business account ID
+async function getTenantByInstagramId(instagramId) {
+  // Search through all tenants for matching Instagram business account
+  for (const [phoneNumber, tenant] of Object.entries(TENANTS)) {
+    const fullTenant = getTenantByToNumber(phoneNumber);
+    if (fullTenant?.instagram?.business_account_id === instagramId) {
+      return fullTenant;
+    }
+  }
+  return null;
 }
 
 // Load tenant knowledge
@@ -428,7 +448,8 @@ ${(knowledgeText || "").slice(0, 8000)}
 Remember: Be conversational, direct, and never spell out web addresses. Answer questions directly without repeating them. NEW CLIENTS get quotes, RETURNING CLIENTS get direct booking links.`;
 
   return prompt.slice(0, 15000);
-  }
+}
+
 // Airtable API integration - SIMPLIFIED (only for existing appointment lookups)
 async function callAirtableAPI(tenant, action, params = {}, requestType = 'lookup') {
   if (!tenant?.airtable_base_id || !tenant?.airtable_table_name) {
@@ -616,13 +637,143 @@ function formatAppointmentDate(dateStr) {
   }
 }
 
+// ---------------- INSTAGRAM INTEGRATION - NEW CODE ----------------
+
+// Instagram webhook verification
+fastify.get("/instagram-webhook", async (req, reply) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  
+  if (mode === 'subscribe' && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
+    fastify.log.info("Instagram webhook verified");
+    reply.send(challenge);
+  } else {
+    fastify.log.warn("Instagram webhook verification failed");
+    reply.code(403).send('Forbidden');
+  }
+});
+
+// Instagram message handler
+fastify.post("/instagram-webhook", async (req, reply) => {
+  const body = req.body;
+  
+  try {
+    if (body.object === 'instagram') {
+      for (const entry of body.entry) {
+        if (entry.messaging) {
+          for (const event of entry.messaging) {
+            await handleInstagramDM(event);
+          }
+        }
+      }
+    }
+    reply.send('EVENT_RECEIVED');
+  } catch (error) {
+    fastify.log.error({ err: error }, "Instagram webhook error");
+    reply.send('ERROR');
+  }
+});
+
+// Instagram DM processing function
+async function handleInstagramDM(event) {
+  try {
+    const message = event.message?.text || '';
+    const senderId = event.sender.id;
+    const recipientId = event.recipient.id;
+    
+    fastify.log.info({ senderId, recipientId, message }, "Processing Instagram DM");
+    
+    // Find tenant by Instagram business account ID
+    const tenant = await getTenantByInstagramId(recipientId);
+    
+    if (!tenant) {
+      fastify.log.warn({ recipientId }, "No tenant found for Instagram account");
+      return;
+    }
+    
+    let response = tenant?.instagram?.greeting_message || "Thanks for messaging us! ";
+    
+    // Process message based on content
+    if (message.toLowerCase().includes('appointment') || message.toLowerCase().includes('book')) {
+      if (tenant?.advanced_features?.new_vs_returning_flow) {
+        response = tenant?.instagram?.auto_responses?.appointment || 
+                  "Are you a new client or returning client? New clients need quotes from our portal, returning clients can book directly!";
+      } else {
+        response = "Visit our website to book an appointment!";
+      }
+    } else if (message.toLowerCase().includes('hours') || message.toLowerCase().includes('open')) {
+      response = tenant?.instagram?.auto_responses?.hours || 
+                tenant?.hours?.hours_string || 
+                "Check our website for current hours!";
+    } else if (message.toLowerCase().includes('price') || message.toLowerCase().includes('cost')) {
+      if (tenant?.advanced_features?.quote_system) {
+        response = tenant?.instagram?.auto_responses?.pricing || 
+                  "Our pricing is quote-based since everyone's needs are different. Visit our service portal for personalized quotes!";
+      } else {
+        response = "Please call us or visit our website for pricing information.";
+      }
+    } else if (message.toLowerCase().includes('location') || message.toLowerCase().includes('address')) {
+      response = tenant?.instagram?.auto_responses?.location || 
+                `We're located at: ${tenant?.address || 'Please check our website for our address'}`;
+    } else if (message.toLowerCase().includes('service')) {
+      response = tenant?.instagram?.auto_responses?.services || 
+                "We offer comprehensive loc care services. What specific service are you interested in?";
+    } else if (message.toLowerCase().includes('training') || message.toLowerCase().includes('course')) {
+      if (tenant?.advanced_features?.training_program) {
+        response = tenant?.instagram?.auto_responses?.training || 
+                  `Yes! We offer training. ${tenant?.training_program?.cost || 'Contact us for details'}.`;
+      } else {
+        response = "Thanks for your interest! Please call us for more information.";
+      }
+    } else {
+      // Default response
+      response = `Thanks for messaging ${tenant?.studio_name || 'us'}! Call us at ${tenant?.contact?.phone || tenant?.phone_number || 'our number'} or visit our website for immediate assistance.`;
+    }
+    
+    // Send response back to Instagram
+    await sendInstagramMessage(senderId, response, tenant);
+    
+  } catch (error) {
+    fastify.log.error({ err: error }, "Instagram DM processing error");
+  }
+}
+
+// Send message back to Instagram
+async function sendInstagramMessage(recipientId, messageText, tenant) {
+  try {
+    const response = await fetch(`https://graph.instagram.com/v18.0/me/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${tenant.instagram.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        message: { text: messageText }
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error(`Instagram API error: ${response.status} - ${errorData}`);
+    }
+    
+    fastify.log.info({ recipientId, tenant: tenant.tenant_id }, "Instagram message sent successfully");
+    
+  } catch (error) {
+    fastify.log.error({ err: error, recipientId }, "Failed to send Instagram message");
+  }
+}
+
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
   return { 
     status: "ok", 
-    service: "LocSync Voice Agent - Multi-Tenant",
+    service: "LocSync Voice Agent - Multi-Tenant with Instagram",
     tenants: Object.keys(TENANTS).length,
-    elevenlabs: process.env.ELEVENLABS_API_KEY ? "enabled" : "disabled"
+    elevenlabs: process.env.ELEVENLABS_API_KEY ? "enabled" : "disabled",
+    instagram: process.env.INSTAGRAM_VERIFY_TOKEN ? "enabled" : "disabled"
   };
 });
 
@@ -713,6 +864,147 @@ fastify.post("/incoming-sms", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
+// Test endpoints
+fastify.get("/test/:tenantId", async (req, reply) => {
+  const baseTenant = TENANTS[req.params.tenantId];
+  if (!baseTenant) {
+    return { error: "Tenant not found", available: Object.keys(TENANTS) };
+  }
+  
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+
+  return {
+    tenant_id: fullTenant?.tenant_id,
+    salon_name: fullTenant?.studio_name || fullTenant?.salon_name,
+    has_airtable: !!(fullTenant?.airtable_base_id && fullTenant?.airtable_table_name),
+    phone_normalized: normalizePhone(fullTenant?.phone_number),
+    has_service_portal: !!fullTenant?.advanced_features?.service_portal,
+    has_quote_system: !!fullTenant?.advanced_features?.quote_system,
+    has_training_program: !!fullTenant?.advanced_features?.training_program,
+    booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
+    consultation_url: fullTenant?.booking?.consultation_url || "not configured",
+    has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId),
+    elevenlabs_voice_id: fullTenant?.elevenlabs_voice_id || "using default",
+    features: {
+      multilingual_support: !!fullTenant?.advanced_features?.multilingual_support,
+      new_vs_returning_flow: !!fullTenant?.advanced_features?.new_vs_returning_flow,
+      maintenance_booking_links: !!fullTenant?.advanced_features?.maintenance_booking_links
+    }
+  };
+});
+
+fastify.get("/test-airtable/:tenantId", async (req, reply) => {
+  const baseTenant = TENANTS[req.params.tenantId];
+  const { phone } = req.query;
+  
+  if (!baseTenant) {
+    return { error: "Tenant not found" };
+  }
+
+  if (!phone) {
+    return { error: "Phone parameter required for testing" };
+  }
+
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+  const result = await callAirtableAPI(fullTenant, 'lookup_appointments', { phone });
+  return result;
+});
+
+// Get tenant features endpoint
+fastify.get("/tenant-features/:tenantId", async (req, reply) => {
+  const baseTenant = TENANTS[req.params.tenantId];
+  if (!baseTenant) {
+    return { error: "Tenant not found" };
+  }
+  
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+  
+  return {
+    tenant_id: fullTenant?.tenant_id,
+    salon_name: fullTenant?.studio_name || fullTenant?.salon_name,
+    features: fullTenant?.advanced_features || {},
+    services: fullTenant?.services?.primary || [],
+    specialties: fullTenant?.services?.specialties || [],
+    has_quote_urls: !!(fullTenant?.services?.quote_urls || fullTenant?.quote_system?.urls),
+    has_maintenance_links: !!(fullTenant?.maintenance_booking_links?.links || fullTenant?.booking?.maintenance_links),
+    has_consultation: !!fullTenant?.booking?.consultation_url,
+    canonical_answers_count: fullTenant?.canonical_answers?.length || 0,
+    elevenlabs_enabled: !!process.env.ELEVENLABS_API_KEY,
+    voice_configuration: {
+      has_custom_voice: !!fullTenant?.elevenlabs_voice_id,
+      voice_id: fullTenant?.elevenlabs_voice_id || "default",
+      fallback_enabled: true
+    }
+  };
+});
+
+// Test ElevenLabs integration endpoint
+fastify.get("/test-voice/:tenantId", async (req, reply) => {
+  const baseTenant = TENANTS[req.params.tenantId];
+  if (!baseTenant) {
+    return { error: "Tenant not found" };
+  }
+  
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+  const testText = req.query.text || "Hello! This is a test of your salon's voice bot. How does this sound?";
+  
+  try {
+    const audioBuffer = await generateElevenLabsAudio(testText, fullTenant);
+    
+    if (audioBuffer) {
+      // Save test audio file
+      const testFilename = `test_voice_${Date.now()}.mp3`;
+      const testPath = `/tmp/${testFilename}`;
+      fs.writeFileSync(testPath, Buffer.from(audioBuffer));
+      
+      return {
+        status: "success",
+        message: "ElevenLabs voice generation successful",
+        audio_url: `https://locsync-q7z9.onrender.com/audio/${testFilename}`,
+        voice_id: fullTenant?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || "default",
+        test_text: testText
+      };
+    } else {
+      return {
+        status: "fallback",
+        message: "ElevenLabs failed, would use Twilio TTS fallback",
+        elevenlabs_configured: !!process.env.ELEVENLABS_API_KEY
+      };
+    }
+  } catch (error) {
+    fastify.log.error({ err: error }, "Voice test error");
+    return {
+      status: "error",
+      message: "Voice test failed",
+      error: error.message,
+      elevenlabs_configured: !!process.env.ELEVENLABS_API_KEY
+    };
+  }
+});
+
+// NEW: Test Instagram integration
+fastify.get("/test-instagram/:tenantId", async (req, reply) => {
+  const tenantId = req.params.tenantId;
+  const baseTenant = Object.values(TENANTS).find(t => t.tenant_id === tenantId);
+  
+  if (!baseTenant) {
+    return { error: "Tenant not found", available: Object.keys(TENANTS) };
+  }
+  
+  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
+  
+  return {
+    tenant_id: tenantId,
+    instagram_enabled: !!fullTenant?.instagram?.webhook_enabled,
+    instagram_username: fullTenant?.instagram?.username,
+    has_access_token: !!fullTenant?.instagram?.access_token,
+    auto_responses: Object.keys(fullTenant?.instagram?.auto_responses || {}),
+    business_account_configured: !!fullTenant?.instagram?.business_account_id,
+    greeting_message: fullTenant?.instagram?.greeting_message,
+    webhook_verify_token: process.env.INSTAGRAM_VERIFY_TOKEN ? "configured" : "missing"
+  };
+});
+
 // Handle speech input - DYNAMIC based on tenant capabilities with RETURNING CLIENT FIX
 fastify.post("/handle-speech", async (req, reply) => {
   const speechResult = req.body?.SpeechResult?.trim() || "";
@@ -771,6 +1063,219 @@ fastify.post("/handle-speech", async (req, reply) => {
       }
     }
     
+    // Website/Instagram requests
+    if (!handled && (lowerSpeech.includes('website') || lowerSpeech.includes('web site') ||
+         lowerSpeech.includes('online') || lowerSpeech.includes('url'))) {
+      await respondWithNaturalVoice(response, "I'm texting you our website link now so you can easily access it.", tenant);
+      const websiteLinks = [tenant?.contact?.website || tenant?.website];
+      if (websiteLinks[0]) {
+        await sendLinksViaSMS(fromNumber, toNumber, websiteLinks, tenant, 'website');
+      }
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+    
+    else if (!handled && (lowerSpeech.includes('instagram') || lowerSpeech.includes('insta') ||
+             lowerSpeech.includes('social media'))) {
+      await respondWithNaturalVoice(response, "I'm texting you our Instagram link now.", tenant);
+      const instaLinks = [tenant?.contact?.instagram_url || tenant?.contact?.instagram_handle];
+      if (instaLinks[0]) {
+        await sendLinksViaSMS(fromNumber, toNumber, instaLinks, tenant, 'instagram');
+      }
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+      handled = true;
+    }
+    
+    // DYNAMIC APPOINTMENT BOOKING based on tenant capabilities
+    if (!handled && (lowerSpeech.includes('need an appointment') || lowerSpeech.includes('need appointment') ||
+         lowerSpeech.includes('want an appointment') || lowerSpeech.includes('want appointment') ||
+         lowerSpeech.includes('book an appointment') || lowerSpeech.includes('book appointment') ||
+         lowerSpeech.includes('schedule an appointment') || lowerSpeech.includes('schedule appointment') ||
+         lowerSpeech.includes('looking for slot') || lowerSpeech.includes('slot availability') ||
+         lowerSpeech.includes('slots available') || lowerSpeech.includes('availability'))) {
+      
+      if (tenant?.advanced_features?.service_portal && tenant?.advanced_features?.new_vs_returning_flow) {
+        // Use advanced flow for quote-based salons (like Loc Repair Clinic)
+        await respondWithNaturalVoice(response, "Are you a new client or a returning client?", tenant);
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Please let me know if you're new or returning so I can help you book the right way.", tenant);
+      } else {
+        // Use simple flow for direct booking salons
+        await respondWithNaturalVoice(response, "What service are you looking for? I can help you get booked.", tenant);
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Please let me know what service you need.", tenant);
+      }
+      handled = true;
+    }
+    
+    // Handle new/returning client responses (only for advanced flow)
+    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
+      if (lowerSpeech.includes('new client') || lowerSpeech.includes('first time') || 
+           lowerSpeech.includes('never been') || lowerSpeech.includes('new customer')) {
+        await respondWithNaturalVoice(response, "Welcome! Since you're a new client, I'm texting you our service portal where you can get a personalized quote for your specific loc needs.", tenant);
+        const servicePortalLink = tenant?.service_portal?.url || tenant?.booking?.main_url;
+        if (servicePortalLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [servicePortalLink], tenant, 'service_portal');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('returning client') || lowerSpeech.includes('been here before') ||
+               lowerSpeech.includes('existing client') || lowerSpeech.includes('regular client') ||
+               lowerSpeech.includes('come here before') || lowerSpeech.includes('returning customer')) {
+        await respondWithNaturalVoice(response, "Great! Since you're a returning client, what service do you usually get? I can send you a direct booking link for your maintenance appointments.", tenant);
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Which service would you like to book?", tenant);
+        handled = true;
+      }
+    }
+    
+    // CRITICAL FIX: Handle returning client service selection responses with DIRECT BOOKING LINKS
+    if (!handled && tenant?.advanced_features?.new_vs_returning_flow) {
+      if (lowerSpeech.includes('retwist') || lowerSpeech.includes('palm roll')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your retwist maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.retwist || tenant?.maintenance_booking_links?.links?.retwist;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'retwist_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('wick')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your wick loc maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.wick || tenant?.maintenance_booking_links?.links?.wick;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'wick_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('interlock')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your interlock maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.interlock || tenant?.maintenance_booking_links?.links?.interlock;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'interlock_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('sister lock') || 
+               lowerSpeech.includes('microlock') || lowerSpeech.includes('micro lock')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your sisterlock maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.sisterlock || tenant?.maintenance_booking_links?.links?.sisterlock;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'sisterlock_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('crochet')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your crochet roots maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.crochet || tenant?.maintenance_booking_links?.links?.crochet;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'crochet_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+      
+      else if (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot') || lowerSpeech.includes('bald')) {
+        await respondWithNaturalVoice(response, "Perfect! I'm texting you the direct booking link for your bald coverage maintenance appointment.", tenant);
+        const bookingLink = tenant?.booking?.maintenance_links?.bald_coverage || tenant?.maintenance_booking_links?.links?.bald_coverage;
+        if (bookingLink) {
+          await sendLinksViaSMS(fromNumber, toNumber, [bookingLink], tenant, 'bald_coverage_booking');
+        }
+        response.gather({
+          input: "speech",
+          action: "/handle-speech",
+          method: "POST",
+          timeout: 12,
+          speechTimeout: "auto"
+        });
+        await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
+        handled = true;
+      }
+    }
+
     // Continue conversation with FIXED flow control
     if (handled) {
       // Only hang up for explicit goodbye phrases
@@ -842,230 +1347,15 @@ fastify.post("/handle-speech", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
-// Test endpoints for tenants
-fastify.get("/test/:tenantId", async (req, reply) => {
-  const baseTenant = TENANTS[req.params.tenantId];
-  if (!baseTenant) {
-    return { error: "Tenant not found", available: Object.keys(TENANTS) };
-  }
-  
-  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
-
-  return {
-    tenant_id: fullTenant?.tenant_id,
-    salon_name: fullTenant?.studio_name || fullTenant?.salon_name,
-    has_airtable: !!(fullTenant?.airtable_base_id && fullTenant?.airtable_table_name),
-    phone_normalized: normalizePhone(fullTenant?.phone_number),
-    has_service_portal: !!fullTenant?.advanced_features?.service_portal,
-    has_quote_system: !!fullTenant?.advanced_features?.quote_system,
-    has_training_program: !!fullTenant?.advanced_features?.training_program,
-    booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
-    consultation_url: fullTenant?.booking?.consultation_url || "not configured",
-    has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId),
-    elevenlabs_voice_id: fullTenant?.elevenlabs_voice_id || "using default",
-    features: {
-      multilingual_support: !!fullTenant?.advanced_features?.multilingual_support,
-      new_vs_returning_flow: !!fullTenant?.advanced_features?.new_vs_returning_flow,
-      maintenance_booking_links: !!fullTenant?.advanced_features?.maintenance_booking_links
-    }
-  };
-});
-
-// Instagram webhook verification
-fastify.get("/instagram-webhook", async (req, reply) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  
-  if (mode === 'subscribe' && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
-    fastify.log.info("Instagram webhook verified");
-    reply.send(challenge);
-  } else {
-    reply.code(403).send('Forbidden');
-  }
-});
-
-// Instagram webhook message handler
-fastify.post("/instagram-webhook", async (req, reply) => {
-  const body = req.body;
-  
-  if (body.object === 'instagram') {
-    body.entry.forEach(async (entry) => {
-      // Get webhook events
-      if (entry.messaging) {
-        for (const event of entry.messaging) {
-          await handleInstagramMessage(event);
-        }
-      }
-    });
-    
-    reply.send('EVENT_RECEIVED');
-  } else {
-    reply.code(404).send('Not Found');
-  }
-});
-
-// Instagram message processing function
-async function handleInstagramMessage(event) {
-  try {
-    const senderId = event.sender.id;
-    const recipientId = event.recipient.id;
-    const messageText = event.message?.text;
-    
-    // Find tenant by Instagram business account ID
-    const tenant = await getTenantByInstagramId(recipientId);
-    
-    if (!tenant) {
-      fastify.log.warn({ recipientId }, "No tenant found for Instagram account");
-      return;
-    }
-    
-    if (messageText) {
-      // Process the message using your existing chat logic
-      const response = await processInstagramMessage(messageText, tenant, senderId);
-      
-      // Send response back to Instagram
-      await sendInstagramMessage(senderId, response, tenant);
-    }
-    
-  } catch (error) {
-    fastify.log.error({ err: error }, "Instagram message processing error");
-  }
-}
-
-// Process Instagram message (similar to your voice logic)
-async function processInstagramMessage(messageText, tenant, senderId) {
-  try {
-    const lowerMessage = messageText.toLowerCase();
-    
-    // Handle common Instagram inquiries
-    if (lowerMessage.includes('appointment') || lowerMessage.includes('book')) {
-      if (tenant?.advanced_features?.new_vs_returning_flow) {
-        return "Are you a new client or a returning client? New clients get quotes from our service portal, returning clients can book directly.";
-      } else {
-        return `To book an appointment, please visit: ${tenant?.booking?.main_url || 'our website'}`;
-      }
-    }
-    
-    if (lowerMessage.includes('hours') || lowerMessage.includes('open')) {
-      return tenant?.hours?.hours_string || "Please check our website for current hours.";
-    }
-    
-    if (lowerMessage.includes('price') || lowerMessage.includes('cost')) {
-      if (tenant?.advanced_features?.quote_system) {
-        return `Our pricing is quote-based since everyone's needs are different. Get a quote at: ${tenant?.service_portal?.url}`;
-      }
-      return "Please call us or visit our website for pricing information.";
-    }
-    
-    if (lowerMessage.includes('location') || lowerMessage.includes('address')) {
-      return `We're located at: ${tenant?.address || 'Please check our website for our address'}`;
-    }
-    
-    // Use OpenAI for complex queries
-    const knowledgeText = loadKnowledgeFor(tenant);
-    const systemPrompt = buildInstagramPrompt(tenant, knowledgeText);
-    
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.7,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: messageText }
-      ],
-      max_tokens: 150
-    });
-    
-    return completion.choices?.[0]?.message?.content?.trim() || 
-           "Thanks for your message! Please call us for immediate assistance.";
-           
-  } catch (error) {
-    fastify.log.error({ err: error }, "Instagram message processing error");
-    return "Thanks for your message! Please call us for assistance.";
-  }
-}
-
-// Send message back to Instagram
-async function sendInstagramMessage(recipientId, messageText, tenant) {
-  try {
-    const response = await fetch(
-      `https://graph.instagram.com/v18.0/me/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${tenant.instagram.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          recipient: { id: recipientId },
-          message: { text: messageText }
-        }),
-      }
-    );
-    
-    if (!response.ok) {
-      throw new Error(`Instagram API error: ${response.status}`);
-    }
-    
-    fastify.log.info({ recipientId, tenant: tenant.tenant_id }, "Instagram message sent");
-    
-  } catch (error) {
-    fastify.log.error({ err: error, recipientId }, "Failed to send Instagram message");
-  }
-}
-
-// Helper function to find tenant by Instagram business account ID
-async function getTenantByInstagramId(instagramId) {
-  // Search through all tenants for matching Instagram business account
-  for (const [tenantKey, tenant] of Object.entries(TENANTS)) {
-    const fullTenant = getTenantByToNumber(tenant.phone_number);
-    if (fullTenant?.instagram?.business_account_id === instagramId) {
-      return fullTenant;
-    }
-  }
-  return null;
-}
-
-// Build Instagram-specific prompt
-function buildInstagramPrompt(tenant, knowledgeText) {
-  const t = tenant || {};
-  
-  return `You are the Instagram assistant for "${t.studio_name || 'our salon'}" with ${t.loctician_name || 'our stylist'}.
-
-CRITICAL INSTRUCTIONS:
-- Keep responses under 160 characters (Instagram DM limit)
-- Be conversational and friendly
-- Always offer to call for detailed help
-- Direct people to website/portal for booking
-- Include relevant links when helpful
-
-Salon Information:
-- Name: ${t.studio_name || 'The Salon'}
-- Loctician: ${t.loctician_name || 'our stylist'}
-- Hours: ${t.hours?.hours_string || 'Please call for hours'}
-- Phone: ${t.contact?.phone || t.phone_number || 'Please check our website'}
-- Website: ${t.contact?.website || t.website || ''}
-
-Booking Process:
-${t.advanced_features?.new_vs_returning_flow ? 
-  'New clients need quotes first, returning clients can book directly.' : 
-  'Direct booking available on our website.'}
-
-Knowledge Base (key points only):
-${(knowledgeText || "").slice(0, 2000)}
-
-Keep responses short, helpful, and always include a call-to-action.`;
-}
-```
-
 // ---------------- START SERVER ----------------
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
     fastify.log.error(err);
     process.exit(1);
   }
-  console.log(`🚀 LocSync Voice Bot - Multi-Tenant Edition running on ${address}`);
+  console.log(`🚀 LocSync Voice Bot - Multi-Tenant with Instagram running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
   console.log(`🎤 ElevenLabs integration: ${process.env.ELEVENLABS_API_KEY ? "ENABLED" : "DISABLED (using Twilio TTS fallback)"}`);
-  console.log(`✨ Clean and ready for Instagram integration!`);
+  console.log(`📸 Instagram integration: ${process.env.INSTAGRAM_VERIFY_TOKEN ? "ENABLED" : "DISABLED"}`);
+  console.log(`✨ COMPLETE: Voice + SMS + Instagram DM automation ready!`);
 });
