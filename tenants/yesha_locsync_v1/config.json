@@ -21,7 +21,8 @@
     "wick_locs": true,
     "loc_repair": true,
     "training_program": true,
-    "multilingual_support": true
+    "multilingual_support": true,
+    "instagram_integration": true
   },
   
   "contact": {
@@ -33,6 +34,29 @@
     "directions_url": "https://www.locrepair.com/directions-and-appointment-info",
     "review_url": "https://g.page/r/CYyyinc_ntKpEAE/review",
     "appointment_lookup": "https://www.locrepair.com/appointment-lookup.html"
+  },
+
+  "instagram": {
+    "business_account_id": "INSTAGRAM_BUSINESS_ID_HERE",
+    "username": "@locrepairexpert",
+    "access_token": "ENCRYPTED_ACCESS_TOKEN_HERE",
+    "webhook_enabled": true,
+    "auto_response_enabled": true,
+    "business_hours_only": false,
+    "greeting_message": "Thanks for messaging Loc Repair Clinic! How can we help with your locs today? 💫",
+    "auto_responses": {
+      "appointment": "Are you a new client or returning client? New clients get quotes from our portal, returning clients can book directly!",
+      "hours": "We're open Sunday-Friday 11AM-7PM by appointment only. Closed Saturdays. What service interests you?",
+      "pricing": "Our pricing is quote-based since everyone's needs are different. Visit our service portal for personalized quotes!",
+      "location": "📍 25240 Lahser Road, Suite 9, Southfield, MI 48033. Parking in rear with handicap access!",
+      "services": "We specialize in loc repair, bald coverage, wick locs, retwists, crochet maintenance & more! What do you need?",
+      "training": "Yes! $49/week loc repair training program. Text START to 313-455-5627 or DM us for details!"
+    },
+    "quick_links": {
+      "service_portal": "https://www.locrepair.com/service_portal",
+      "appointment_lookup": "https://www.locrepair.com/appointment-lookup.html",
+      "directions": "https://www.locrepair.com/directions-and-appointment-info"
+    }
   },
   
   "hours": {
@@ -269,4 +293,3 @@
     "review": "We appreciate reviews - we'll send you the link.",
     "running_late": "Thanks for the update! Yesha has been informed you're running behind."
   }
-}
