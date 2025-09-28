@@ -871,6 +871,193 @@ fastify.get("/test/:tenantId", async (req, reply) => {
   };
 });
 
+// Instagram webhook verification
+fastify.get("/instagram-webhook", async (req, reply) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  
+  if (mode === 'subscribe' && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
+    fastify.log.info("Instagram webhook verified");
+    reply.send(challenge);
+  } else {
+    reply.code(403).send('Forbidden');
+  }
+});
+
+// Instagram webhook message handler
+fastify.post("/instagram-webhook", async (req, reply) => {
+  const body = req.body;
+  
+  if (body.object === 'instagram') {
+    body.entry.forEach(async (entry) => {
+      // Get webhook events
+      if (entry.messaging) {
+        for (const event of entry.messaging) {
+          await handleInstagramMessage(event);
+        }
+      }
+    });
+    
+    reply.send('EVENT_RECEIVED');
+  } else {
+    reply.code(404).send('Not Found');
+  }
+});
+
+// Instagram message processing function
+async function handleInstagramMessage(event) {
+  try {
+    const senderId = event.sender.id;
+    const recipientId = event.recipient.id;
+    const messageText = event.message?.text;
+    
+    // Find tenant by Instagram business account ID
+    const tenant = await getTenantByInstagramId(recipientId);
+    
+    if (!tenant) {
+      fastify.log.warn({ recipientId }, "No tenant found for Instagram account");
+      return;
+    }
+    
+    if (messageText) {
+      // Process the message using your existing chat logic
+      const response = await processInstagramMessage(messageText, tenant, senderId);
+      
+      // Send response back to Instagram
+      await sendInstagramMessage(senderId, response, tenant);
+    }
+    
+  } catch (error) {
+    fastify.log.error({ err: error }, "Instagram message processing error");
+  }
+}
+
+// Process Instagram message (similar to your voice logic)
+async function processInstagramMessage(messageText, tenant, senderId) {
+  try {
+    const lowerMessage = messageText.toLowerCase();
+    
+    // Handle common Instagram inquiries
+    if (lowerMessage.includes('appointment') || lowerMessage.includes('book')) {
+      if (tenant?.advanced_features?.new_vs_returning_flow) {
+        return "Are you a new client or a returning client? New clients get quotes from our service portal, returning clients can book directly.";
+      } else {
+        return `To book an appointment, please visit: ${tenant?.booking?.main_url || 'our website'}`;
+      }
+    }
+    
+    if (lowerMessage.includes('hours') || lowerMessage.includes('open')) {
+      return tenant?.hours?.hours_string || "Please check our website for current hours.";
+    }
+    
+    if (lowerMessage.includes('price') || lowerMessage.includes('cost')) {
+      if (tenant?.advanced_features?.quote_system) {
+        return `Our pricing is quote-based since everyone's needs are different. Get a quote at: ${tenant?.service_portal?.url}`;
+      }
+      return "Please call us or visit our website for pricing information.";
+    }
+    
+    if (lowerMessage.includes('location') || lowerMessage.includes('address')) {
+      return `We're located at: ${tenant?.address || 'Please check our website for our address'}`;
+    }
+    
+    // Use OpenAI for complex queries
+    const knowledgeText = loadKnowledgeFor(tenant);
+    const systemPrompt = buildInstagramPrompt(tenant, knowledgeText);
+    
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.7,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: messageText }
+      ],
+      max_tokens: 150
+    });
+    
+    return completion.choices?.[0]?.message?.content?.trim() || 
+           "Thanks for your message! Please call us for immediate assistance.";
+           
+  } catch (error) {
+    fastify.log.error({ err: error }, "Instagram message processing error");
+    return "Thanks for your message! Please call us for assistance.";
+  }
+}
+
+// Send message back to Instagram
+async function sendInstagramMessage(recipientId, messageText, tenant) {
+  try {
+    const response = await fetch(
+      `https://graph.instagram.com/v18.0/me/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tenant.instagram.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          recipient: { id: recipientId },
+          message: { text: messageText }
+        }),
+      }
+    );
+    
+    if (!response.ok) {
+      throw new Error(`Instagram API error: ${response.status}`);
+    }
+    
+    fastify.log.info({ recipientId, tenant: tenant.tenant_id }, "Instagram message sent");
+    
+  } catch (error) {
+    fastify.log.error({ err: error, recipientId }, "Failed to send Instagram message");
+  }
+}
+
+// Helper function to find tenant by Instagram business account ID
+async function getTenantByInstagramId(instagramId) {
+  // Search through all tenants for matching Instagram business account
+  for (const [tenantKey, tenant] of Object.entries(TENANTS)) {
+    const fullTenant = getTenantByToNumber(tenant.phone_number);
+    if (fullTenant?.instagram?.business_account_id === instagramId) {
+      return fullTenant;
+    }
+  }
+  return null;
+}
+
+// Build Instagram-specific prompt
+function buildInstagramPrompt(tenant, knowledgeText) {
+  const t = tenant || {};
+  
+  return `You are the Instagram assistant for "${t.studio_name || 'our salon'}" with ${t.loctician_name || 'our stylist'}.
+
+CRITICAL INSTRUCTIONS:
+- Keep responses under 160 characters (Instagram DM limit)
+- Be conversational and friendly
+- Always offer to call for detailed help
+- Direct people to website/portal for booking
+- Include relevant links when helpful
+
+Salon Information:
+- Name: ${t.studio_name || 'The Salon'}
+- Loctician: ${t.loctician_name || 'our stylist'}
+- Hours: ${t.hours?.hours_string || 'Please call for hours'}
+- Phone: ${t.contact?.phone || t.phone_number || 'Please check our website'}
+- Website: ${t.contact?.website || t.website || ''}
+
+Booking Process:
+${t.advanced_features?.new_vs_returning_flow ? 
+  'New clients need quotes first, returning clients can book directly.' : 
+  'Direct booking available on our website.'}
+
+Knowledge Base (key points only):
+${(knowledgeText || "").slice(0, 2000)}
+
+Keep responses short, helpful, and always include a call-to-action.`;
+}
+```
+
 // ---------------- START SERVER ----------------
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
