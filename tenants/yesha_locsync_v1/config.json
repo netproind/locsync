@@ -37,9 +37,9 @@
   },
 
   "instagram": {
-    "business_account_id": "INSTAGRAM_BUSINESS_ID_HERE",
+    "business_account_id": "842885554836345",
     "username": "@locrepairexpert",
-    "access_token": "ENCRYPTED_ACCESS_TOKEN_HERE",
+    "access_token": "IGAALZBmZAYVE3lBZAFNCaWlUWVhwUUxjVWRxcEhQUnI0N2o3ZATZAMaU5QWF9DUXlhdW0wemRtU1I2RHdZAZAHZACWlZAHR01vY3ViWWNkd0M5eC1kUnMyWFI3MjNPay1ycUZAxVmdXQmdxaFZAFbzZAKMERhcF96b21DY3RFRzBXbENPRjYwZAwZDZD",
     "webhook_enabled": true,
     "auto_response_enabled": true,
     "business_hours_only": false,
