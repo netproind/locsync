@@ -781,6 +781,21 @@ fastify.get("/health", async () => {
   return { status: "healthy", timestamp: new Date().toISOString() };
 });
 
+// Instagram OAuth connection route (ADD THIS)
+fastify.get('/connect-instagram/:tenantId', async (req, reply) => {
+  const tenantId = req.params.tenantId;
+  const state = `tenant_${tenantId}_${Date.now()}`;
+  
+  const authUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${process.env.INSTAGRAM_APP_ID}&redirect_uri=https://locsync-q7z9.onrender.com/instagram/callback&scope=instagram_business_basic,instagram_business_manage_messages,pages_show_list,pages_read_engagement&response_type=code&state=${state}`;
+  
+  reply.redirect(authUrl);
+});
+
+// Instagram OAuth callback (ADD THIS)
+fastify.get('/instagram/callback', async (req, reply) => {
+  // Handle OAuth callback and save tokens to tenant config
+});
+
 // ---------------- ELEVENLABS AUDIO SERVING ROUTE ----------------
 fastify.get('/audio/:filename', async (request, reply) => {
   try {
