@@ -791,10 +791,6 @@ fastify.get('/connect-instagram/:tenantId', async (req, reply) => {
   reply.redirect(authUrl);
 });
 
-// Instagram OAuth callback (ADD THIS)
-fastify.get('/instagram/callback', async (req, reply) => {
-  // Handle OAuth callback and save tokens to tenant config
-});
 
 // ---------------- ELEVENLABS AUDIO SERVING ROUTE ----------------
 fastify.get('/audio/:filename', async (request, reply) => {
