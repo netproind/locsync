@@ -1,0 +1,83 @@
+{
+  "salon_type": "demo",
+  "salon_name": "Demo Salon",
+  "studio_name": "Demo Salon for Meta Review",
+  "loctician_name": "Demo Stylist",
+  "experience_years": 10,
+  "base_domain": "demosalon.com",
+  "timezone": "America/New_York",
+  "location": "Demo City, Demo State",
+  "address": "123 Demo Street, Demo City, ST 12345",
+  
+  "airtable_base_id": "",
+  "airtable_table_name": "",
+  
+  "advanced_features": {
+    "service_portal": true,
+    "quote_system": false,
+    "new_vs_returning_flow": true,
+    "maintenance_booking_links": false,
+    "bald_coverage": false,
+    "wick_locs": false,
+    "loc_repair": false,
+    "training_program": false,
+    "multilingual_support": false
+  },
+  
+  "contact": {
+    "phone": "+15555551234",
+    "email": "demo@locsync.com",
+    "website": "https://locsync.com",
+    "instagram_handle": "@locsync_demo",
+    "instagram_url": "https://www.instagram.com/locsync_demo"
+  },
+  
+  "hours": {
+    "schedule": "Monday through Friday, 9:00am-5pm by appointment only",
+    "closed_days": ["Saturday", "Sunday"],
+    "hours_string": "Monday through Friday, 9 AM to 5 PM"
+  },
+  
+  "voice_config": {
+    "provider": "openai",
+    "voice": "nova",
+    "model": "gpt-4o-mini",
+    "temperature": 0.8,
+    "greeting_tts": "Thanks for calling Demo Salon. How can I help you today?",
+    "no_repeat_questions": true,
+    "send_links_via_sms": true
+  },
+  
+  "service_portal": {
+    "enabled": true,
+    "url": "https://locsync.com/demo",
+    "description": "Get information about our services"
+  },
+  
+  "booking": {
+    "main_url": "https://locsync.com/book",
+    "booking_site": "https://locsync.com/book",
+    "requires_quote": false
+  },
+  
+  "instagram": {
+    "enabled": true,
+    "username": "@locsync_demo",
+    "business_account_id": "",
+    "access_token": "",
+    "webhook_enabled": false,
+    "greeting_message": "Thanks for messaging Demo Salon! How can we help you today?",
+    "auto_responses": {
+      "hours": "We're open Monday through Friday, 9 AM to 5 PM.",
+      "appointment": "To book an appointment, please visit our website at locsync.com/book",
+      "services": "We offer comprehensive hair care services. What specific service are you interested in?",
+      "pricing": "Pricing varies based on service. Visit our website for detailed pricing information.",
+      "location": "We're located at 123 Demo Street, Demo City."
+    }
+  },
+  
+  "services": {
+    "primary": ["Hair styling", "Consultations", "Hair care"],
+    "specialties": ["Professional styling", "Custom treatments"]
+  }
+}
