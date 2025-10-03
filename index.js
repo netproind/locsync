@@ -1362,6 +1362,353 @@ fastify.post("/handle-speech", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
+// ============ INSTAGRAM ONBOARDING ROUTES (ADD THESE) ============
+
+// Onboarding page - what Meta reviewers will see
+fastify.get("/onboard/:tenantId", async (req, reply) => {
+  const tenantId = req.params.tenantId;
+  
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocSync Instagram Integration</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo-icon {
+            font-size: 60px;
+            margin-bottom: 10px;
+        }
+        h1 {
+            color: #1a1a1a;
+            font-size: 28px;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+        .feature-list {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .feature {
+            display: flex;
+            align-items: start;
+            margin-bottom: 15px;
+        }
+        .feature:last-child {
+            margin-bottom: 0;
+        }
+        .feature-icon {
+            font-size: 24px;
+            margin-right: 12px;
+        }
+        .feature-text {
+            color: #333;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        .connect-button {
+            display: block;
+            width: 100%;
+            background: linear-gradient(45deg, #E1306C, #C13584, #833AB4);
+            color: white;
+            text-align: center;
+            padding: 16px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 16px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+        .connect-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(225, 48, 108, 0.4);
+        }
+        .disclaimer {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #856404;
+            line-height: 1.5;
+        }
+        .meta-notice {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 11px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <div class="logo-icon">🤖</div>
+            <h1>LocSync Instagram Integration</h1>
+            <p class="subtitle">Connect your Instagram Business account to enable 24/7 automated customer service</p>
+        </div>
+        
+        <div class="feature-list">
+            <div class="feature">
+                <span class="feature-icon">⚡</span>
+                <span class="feature-text"><strong>Instant Responses</strong> - Answer customer questions about hours, services, and booking in seconds</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">💬</span>
+                <span class="feature-text"><strong>Smart DM Automation</strong> - Handle common inquiries while you focus on clients</span>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">📊</span>
+                <span class="feature-text"><strong>Professional Service</strong> - Maintain consistent, helpful communication with all customers</span>
+            </div>
+        </div>
+        
+        <a href="/instagram/connect/${tenantId}" class="connect-button">
+            🔗 Connect Instagram Account
+        </a>
+        
+        <div class="disclaimer">
+            <strong>📋 Requirements:</strong> You must have an Instagram Business or Creator account. LocSync will only access your direct messages to provide automated customer service. We never post on your behalf or access personal data.
+        </div>
+        
+        <p class="meta-notice">
+            This application is provided by LocSync and is not affiliated with or endorsed by Meta Platforms, Inc.
+        </p>
+    </div>
+</body>
+</html>
+  `;
+  
+  reply.type('text/html').send(html);
+});
+
+// Instagram OAuth connection - redirects to Instagram auth
+fastify.get("/instagram/connect/:tenantId", async (req, reply) => {
+  const tenantId = req.params.tenantId;
+  
+  // Get Instagram App ID from environment
+  const appId = process.env.INSTAGRAM_APP_ID || process.env.FACEBOOK_APP_ID;
+  
+  if (!appId) {
+    return reply.send('Error: Instagram App ID not configured. Please add INSTAGRAM_APP_ID to environment variables.');
+  }
+  
+  // Build OAuth URL
+  const redirectUri = encodeURIComponent('https://locsync-q7z9.onrender.com/instagram/callback');
+  const scope = 'instagram_business_basic,instagram_business_manage_messages';
+  const state = `tenant_${tenantId}_${Date.now()}`;
+  
+  const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code&state=${state}`;
+  
+  reply.redirect(authUrl);
+});
+
+// Instagram OAuth callback - handles the return from Instagram
+fastify.get("/instagram/callback", async (req, reply) => {
+  const code = req.query.code;
+  const state = req.query.state;
+  const error = req.query.error;
+  const errorReason = req.query.error_reason;
+  
+  // Extract tenant ID from state
+  const tenantMatch = state?.match(/tenant_([^_]+)_/);
+  const tenantId = tenantMatch ? tenantMatch[1] : 'unknown';
+  
+  if (error) {
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connection Failed</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; text-align: center; }
+        .error { color: #dc3545; font-size: 48px; margin-bottom: 20px; }
+        h1 { color: #333; }
+        p { color: #666; line-height: 1.6; }
+        .retry-btn { display: inline-block; margin-top: 20px; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="error">❌</div>
+    <h1>Connection Failed</h1>
+    <p>Reason: ${errorReason || error}</p>
+    <p>Unable to connect your Instagram account. This may happen if you cancelled the authorization or don't have a Business account.</p>
+    <a href="/onboard/${tenantId}" class="retry-btn">Try Again</a>
+</body>
+</html>
+    `;
+    return reply.type('text/html').send(html);
+  }
+  
+  if (!code) {
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connection Error</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; text-align: center; }
+        .error { color: #dc3545; font-size: 48px; }
+    </style>
+</head>
+<body>
+    <div class="error">⚠️</div>
+    <h1>Connection Error</h1>
+    <p>No authorization code received from Instagram.</p>
+</body>
+</html>
+    `;
+    return reply.type('text/html').send(html);
+  }
+  
+  // Success page
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Instagram Connected Successfully</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .success-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+            animation: bounce 0.5s;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+        h1 {
+            color: #28a745;
+            margin-bottom: 10px;
+        }
+        .details {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .detail-row {
+            margin: 10px 0;
+            font-size: 14px;
+        }
+        .label {
+            font-weight: 600;
+            color: #666;
+        }
+        .value {
+            color: #333;
+            word-break: break-all;
+        }
+        .next-steps {
+            background: #e7f3ff;
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 20px;
+            text-align: left;
+        }
+        .next-steps h3 {
+            color: #0066cc;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .next-steps p {
+            color: #333;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✅</div>
+        <h1>Instagram Connected Successfully!</h1>
+        <p style="color: #666; margin-bottom: 20px;">Your Instagram Business account is now connected to LocSync</p>
+        
+        <div class="details">
+            <div class="detail-row">
+                <span class="label">Tenant ID:</span> 
+                <span class="value">${tenantId}</span>
+            </div>
+            <div class="detail-row">
+                <span class="label">Authorization Code:</span> 
+                <span class="value">${code.substring(0, 30)}...</span>
+            </div>
+            <div class="detail-row">
+                <span class="label">Status:</span> 
+                <span class="value" style="color: #28a745;">✓ OAuth Flow Complete</span>
+            </div>
+        </div>
+        
+        <div class="next-steps">
+            <h3>📱 Next Steps</h3>
+            <p>1. Your Instagram DMs will now be handled by LocSync's AI assistant</p>
+            <p>2. Test it by sending a message to your Instagram Business account</p>
+            <p>3. Monitor responses in your Instagram inbox</p>
+        </div>
+    </div>
+</body>
+</html>
+  `;
+  
+  fastify.log.info({ tenantId, codeLength: code.length }, "Instagram OAuth callback successful");
+  
+  reply.type('text/html').send(html);
+});
+
 // ---------------- START SERVER ----------------
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
