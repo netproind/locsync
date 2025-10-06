@@ -675,70 +675,48 @@ fastify.post("/instagram-webhook", async (req, reply) => {
   }
 });
 
-// Instagram DM processing function
 async function handleInstagramDM(event) {
   try {
-    const message = event.message?.text || '';
-    const senderId = event.sender.id;
-    const recipientId = event.recipient.id;
+    // Log the full event to see structure
+    fastify.log.info({ event }, "Instagram webhook event received");
     
-    fastify.log.info({ senderId, recipientId, message }, "Processing Instagram DM");
-    
-    // Find tenant by Instagram business account ID
-    const tenant = await getTenantByInstagramId(recipientId);
-    
-    if (!tenant) {
-      fastify.log.warn({ recipientId }, "No tenant found for Instagram account");
+    // Instagram webhook structure
+    if (!event.entry || !event.entry[0] || !event.entry[0].messaging) {
+      fastify.log.warn("Invalid Instagram webhook structure");
       return;
     }
     
-    let response = tenant?.instagram?.greeting_message || "Thanks for messaging us! ";
-    
-    // Process message based on content
-    if (message.toLowerCase().includes('appointment') || message.toLowerCase().includes('book')) {
-      if (tenant?.advanced_features?.new_vs_returning_flow) {
-        response = tenant?.instagram?.auto_responses?.appointment || 
-                  "Are you a new client or returning client? New clients need quotes from our portal, returning clients can book directly!";
-      } else {
-        response = "Visit our website to book an appointment!";
+    for (const entry of event.entry) {
+      if (!entry.messaging) continue;
+      
+      for (const messagingEvent of entry.messaging) {
+        const senderId = messagingEvent.sender?.id;
+        const recipientId = messagingEvent.recipient?.id;
+        const message = messagingEvent.message?.text || '';
+        
+        fastify.log.info({ senderId, recipientId, message }, "Processing Instagram DM");
+        
+        // Find tenant by Instagram business account ID
+        const tenant = await getTenantByInstagramId(recipientId);
+        
+        if (!tenant) {
+          fastify.log.warn({ recipientId }, "No tenant found for Instagram account");
+          return;
+        }
+        
+        // Process message and send response
+        let response = tenant?.instagram?.greeting_message || "Thanks for messaging us!";
+        
+        // Your message processing logic here...
+        
+        await sendInstagramMessage(senderId, response, tenant);
       }
-    } else if (message.toLowerCase().includes('hours') || message.toLowerCase().includes('open')) {
-      response = tenant?.instagram?.auto_responses?.hours || 
-                tenant?.hours?.hours_string || 
-                "Check our website for current hours!";
-    } else if (message.toLowerCase().includes('price') || message.toLowerCase().includes('cost')) {
-      if (tenant?.advanced_features?.quote_system) {
-        response = tenant?.instagram?.auto_responses?.pricing || 
-                  "Our pricing is quote-based since everyone's needs are different. Visit our service portal for personalized quotes!";
-      } else {
-        response = "Please call us or visit our website for pricing information.";
-      }
-    } else if (message.toLowerCase().includes('location') || message.toLowerCase().includes('address')) {
-      response = tenant?.instagram?.auto_responses?.location || 
-                `We're located at: ${tenant?.address || 'Please check our website for our address'}`;
-    } else if (message.toLowerCase().includes('service')) {
-      response = tenant?.instagram?.auto_responses?.services || 
-                "We offer comprehensive loc care services. What specific service are you interested in?";
-    } else if (message.toLowerCase().includes('training') || message.toLowerCase().includes('course')) {
-      if (tenant?.advanced_features?.training_program) {
-        response = tenant?.instagram?.auto_responses?.training || 
-                  `Yes! We offer training. ${tenant?.training_program?.cost || 'Contact us for details'}.`;
-      } else {
-        response = "Thanks for your interest! Please call us for more information.";
-      }
-    } else {
-      // Default response
-      response = `Thanks for messaging ${tenant?.studio_name || 'us'}! Call us at ${tenant?.contact?.phone || tenant?.phone_number || 'our number'} or visit our website for immediate assistance.`;
     }
-    
-    // Send response back to Instagram
-    await sendInstagramMessage(senderId, response, tenant);
     
   } catch (error) {
     fastify.log.error({ err: error }, "Instagram DM processing error");
   }
 }
-
 // Send message back to Instagram
 async function sendInstagramMessage(recipientId, messageText, tenant) {
   try {
