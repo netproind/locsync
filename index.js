@@ -680,6 +680,12 @@ async function handleInstagramDM(event) {
     // Log the full event to see structure
     fastify.log.info({ event }, "Instagram webhook event received");
     
+    // Skip message_edit events - we only care about new messages
+    if (event.message_edit) {
+      fastify.log.info("Skipping message_edit event");
+      return;
+    }
+    
     // Instagram webhook structure
     if (!event.entry || !event.entry[0] || !event.entry[0].messaging) {
       fastify.log.warn("Invalid Instagram webhook structure");
@@ -693,6 +699,12 @@ async function handleInstagramDM(event) {
         const senderId = messagingEvent.sender?.id;
         const recipientId = messagingEvent.recipient?.id;
         const message = messagingEvent.message?.text || '';
+        
+        // Skip if this is also a message_edit event at this level
+        if (messagingEvent.message_edit) {
+          fastify.log.info("Skipping nested message_edit event");
+          continue;
+        }
         
         fastify.log.info({ senderId, recipientId, message }, "Processing Instagram DM");
         
