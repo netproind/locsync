@@ -677,59 +677,50 @@ fastify.post("/instagram-webhook", async (req, reply) => {
 
 async function handleInstagramDM(event) {
   try {
-    // Log the full event to see structure
-    fastify.log.info({ event }, "Instagram webhook event received");
+    fastify.log.info({ fullPayload: JSON.stringify(event) }, "Instagram webhook received");
     
-    // Skip message_edit events - we only care about new messages
-    if (event.message_edit) {
-      fastify.log.info("Skipping message_edit event");
-      return;
-    }
-    
-    // Instagram webhook structure
+    // Instagram sends events in entry array
     if (!event.entry || !event.entry[0] || !event.entry[0].messaging) {
-      fastify.log.warn("Invalid Instagram webhook structure");
+      fastify.log.info("Not a messaging event");
       return;
     }
     
     for (const entry of event.entry) {
       if (!entry.messaging) continue;
       
-      for (const messagingEvent of entry.messaging) {
-        const senderId = messagingEvent.sender?.id;
-        const recipientId = messagingEvent.recipient?.id;
-        const message = messagingEvent.message?.text || '';
-        
-        // Skip if this is also a message_edit event at this level
-        if (messagingEvent.message_edit) {
-          fastify.log.info("Skipping nested message_edit event");
+      for (const msg of entry.messaging) {
+        // Skip non-message events
+        if (msg.message_edit || msg.read || msg.delivery || msg.reaction) {
+          fastify.log.info("Skipping non-message event");
           continue;
         }
         
-        fastify.log.info({ senderId, recipientId, message }, "Processing Instagram DM");
-        
-        // Find tenant by Instagram business account ID
-        const tenant = await getTenantByInstagramId(recipientId);
-        
-        if (!tenant) {
-          fastify.log.warn({ recipientId }, "No tenant found for Instagram account");
-          return;
+        // Process actual messages
+        if (!msg.message || !msg.message.text) {
+          fastify.log.info("No text message");
+          continue;
         }
         
-        // Process message and send response
-        let response = tenant?.instagram?.greeting_message || "Thanks for messaging us!";
+        const senderId = msg.sender.id;
+        const recipientId = msg.recipient.id;
+        const messageText = msg.message.text;
         
-        // Your message processing logic here...
+        fastify.log.info({ senderId, messageText }, "ACTUAL MESSAGE RECEIVED");
         
-        await sendInstagramMessage(senderId, response, tenant);
+        const tenant = await getTenantByInstagramId(recipientId);
+        if (!tenant?.instagram?.access_token) {
+          fastify.log.error("No tenant or access token");
+          continue;
+        }
+        
+        await sendInstagramMessage(senderId, "Hi! Thanks for your message. How can we help?", tenant);
       }
     }
     
   } catch (error) {
-    fastify.log.error({ err: error }, "Instagram DM processing error");
+    fastify.log.error({ err: error, stack: error.stack }, "Instagram error");
   }
 }
-// Send message back to Instagram
 async function sendInstagramMessage(recipientId, messageText, tenant) {
   try {
     const response = await fetch(`https://graph.instagram.com/v18.0/me/messages`, {
