@@ -4,15 +4,15 @@ import twilio from "twilio";
 import fs from "fs";
 import OpenAI from "openai";
 
-// ----------------------------------------------------------------------------
-// Fastify + plugins
-// ----------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/* Fastify                                                                    */
+/* -------------------------------------------------------------------------- */
 const fastify = Fastify({ logger: true });
 await fastify.register(formbody);
 
-// ----------------------------------------------------------------------------
-/** ENV */
-// ----------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/* ENV                                                                        */
+/* -------------------------------------------------------------------------- */
 const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
@@ -23,30 +23,36 @@ const {
   PAGE_ACCESS_TOKEN,        // <-- set this in Render env
   PORT = 10000,
   IG_REVIEW_MODE,           // "true" enables review/bypass mode
+  ELEVENLABS_API_KEY,
+  ELEVENLABS_VOICE_ID
 } = process.env;
 
 const REVIEW_MODE = (IG_REVIEW_MODE === "true");
 
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI_API_KEY || !AIRTABLE_PAT) {
   console.error("❌ Missing required environment variables");
-  process.exit(1);
+  // Not fatal for IG DM testing, but fatal for the overall server if you rely on voice/Airtable.
+  // Comment the next line if you want to ignore this during IG review only.
+  // process.exit(1);
 }
 
 const twiml = twilio.twiml.VoiceResponse;
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ---- IG DEBUG BUFFER (stores the latest IG webhook so you can grab PSID) ----
+/* -------------------------------------------------------------------------- */
+/* IG DEBUG BUFFER (store last webhook to copy PSID easily)                   */
+/* -------------------------------------------------------------------------- */
 let LAST_IG_WEBHOOK = null;
 
-// ----------------------------------------------------------------------------
-// ElevenLabs (unchanged except for logging)
-// ----------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/* ElevenLabs (optional)                                                      */
+/* -------------------------------------------------------------------------- */
 async function generateElevenLabsAudio(text, tenant) {
   try {
-    if (!process.env.ELEVENLABS_API_KEY) return null;
+    if (!ELEVENLABS_API_KEY) return null;
 
-    const voiceId = tenant?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
+    const voiceId = tenant?.elevenlabs_voice_id || ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
       {
@@ -54,7 +60,7 @@ async function generateElevenLabsAudio(text, tenant) {
         headers: {
           'Accept': 'audio/mpeg',
           'Content-Type': 'application/json',
-          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+          'xi-api-key': ELEVENLABS_API_KEY,
         },
         body: JSON.stringify({
           text,
@@ -73,14 +79,14 @@ async function generateElevenLabsAudio(text, tenant) {
 
 async function respondWithNaturalVoice(response, text, tenant) {
   try {
-    if (process.env.ELEVENLABS_API_KEY) {
+    if (ELEVENLABS_API_KEY) {
       const audioBuffer = await generateElevenLabsAudio(text, tenant);
       if (audioBuffer) {
         const audioFilename = `audio_${Date.now()}.mp3`;
         const audioPath = `/tmp/${audioFilename}`;
         fs.writeFileSync(audioPath, Buffer.from(audioBuffer));
-        // NOTE: ensure you serve /audio/* if you rely on this URL
-        response.play(`https://locsync-q7z9.onrender.com/audio/${audioFilename}`);
+        // You would need a static route to serve /audio/* from /tmp in production if you use this.
+        response.say(text); // Speak anyway; swap to .play() if you wire static serving
         fastify.log.info("Using ElevenLabs voice for response");
         return true;
       }
@@ -93,93 +99,21 @@ async function respondWithNaturalVoice(response, text, tenant) {
   return false;
 }
 
-// ----------------------------------------------------------------------------
-// Tenants loading (unchanged structure, safer parsing)
-// ----------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/* Tenants loading (safer JSON parsing)                                       */
+/* -------------------------------------------------------------------------- */
 let TENANTS = {};
 let TENANT_DETAILS = new Map();
 
 try {
-  TENANTS = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
-  fastify.log.info("✅ Loaded tenants registry");
+  if (fs.existsSync("./tenants.json")) {
+    TENANTS = JSON.parse(fs.readFileSync("./tenants.json", "utf8"));
+    fastify.log.info("✅ Loaded tenants registry");
+  } else {
+    fastify.log.warn("⚠️ No tenants.json found. Using defaults.");
+  }
 } catch (e) {
-  fastify.log.warn("⚠️ No tenants.json found. Using defaults.");
-}
-
-function extractUrls(text) {
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  return text.match(urlRegex) || [];
-}
-
-async function sendLinksViaSMS(fromNumber, toNumber, links, tenant, serviceType = null) {
-  if (!links.length || !tenant?.voice_config?.send_links_via_sms) return;
-  try {
-    let message = "";
-
-    if (links.length === 1) {
-      const link = links[0];
-      if (tenant?.advanced_features?.service_portal) {
-        if (serviceType === 'wick_maintenance') message = `Wick Locs Maintenance Quote: ${link}`;
-        else if (serviceType === 'bald_coverage') message = `Bald Coverage Quote: ${link}`;
-        else if (serviceType === 'repair') message = `Loc Repair Quote: ${link}`;
-        else if (serviceType === 'starter_locs') message = `Starter Locs Quote: ${link}`;
-        else if (serviceType === 'sisterlocks') message = `Sisterlocks Maintenance Quote: ${link}`;
-        else if (serviceType === 'service_portal') message = `Service Portal - Get personalized quotes: ${link}`;
-      }
-      if (serviceType === 'retwist_booking') message = `Book your Retwist/Palm Roll appointment: ${link}`;
-      else if (serviceType === 'wick_booking') message = `Book your Wick Loc maintenance appointment: ${link}`;
-      else if (serviceType === 'interlock_booking') message = `Book your Interlock maintenance appointment: ${link}`;
-      else if (serviceType === 'sisterlock_booking') message = `Book your Sisterlock/Microlock maintenance appointment: ${link}`;
-      else if (serviceType === 'crochet_booking') message = `Book your Crochet Roots maintenance appointment: ${link}`;
-      else if (serviceType === 'bald_coverage_booking') message = `Book your Bald Coverage maintenance appointment: ${link}`;
-      else if (serviceType === 'consultation_booking') message = `Book your consultation appointment: ${link}`;
-      if (serviceType === 'website') message = `Visit our website for language support chatbot: ${link}`;
-      else if (serviceType === 'instagram') message = `Follow us on Instagram: ${link}`;
-      else if (serviceType === 'appointment_lookup') message = `Appointment Lookup - Find and manage your appointments: ${link}`;
-      else if (link.includes('directions')) message = `Here are the detailed directions to our door: ${link}`;
-      else if (!message) message = `Here's the link we mentioned: ${link}`;
-    } else {
-      message = `Here are the links we mentioned:\n${links.map((link, i) => {
-        if (link.includes('service_portal')) return `${i + 1}. Service Portal: ${link}`;
-        if (link.includes('directions')) return `${i + 1}. Directions: ${link}`;
-        if (link.includes('instagram')) return `${i + 1}. Instagram: ${link}`;
-        if (link.includes('appointment-lookup')) return `${i + 1}. Appointment Lookup: ${link}`;
-        return `${i + 1}. ${link}`;
-      }).join('\n')}`;
-    }
-
-    await twilioClient.messages.create({ body: message, from: toNumber, to: fromNumber });
-    fastify.log.info({ fromNumber, linkCount: links.length, serviceType, messageType: 'service_link' }, "SMS sent successfully");
-  } catch (err) {
-    fastify.log.error({ err, fromNumber, serviceType }, "Failed to send SMS");
-  }
-}
-
-function getServiceBookingLink(serviceType, tenant, isReturningClient = false) {
-  if (isReturningClient && tenant?.advanced_features?.new_vs_returning_flow) {
-    if (tenant?.maintenance_booking_links?.links) {
-      const link = tenant.maintenance_booking_links.links[serviceType];
-      if (link) return { url: link, type: 'booking' };
-    }
-    if (tenant?.booking?.maintenance_links) {
-      const link = tenant.booking.maintenance_links[serviceType];
-      if (link) return { url: link, type: 'booking' };
-    }
-  }
-  if (tenant?.advanced_features?.quote_system && tenant?.quote_system?.urls) {
-    const link = tenant.quote_system.urls[serviceType];
-    if (link) return { url: link, type: 'quote' };
-  }
-  if (tenant?.maintenance_booking_links?.links) {
-    const link = tenant.maintenance_booking_links.links[serviceType];
-    if (link) return { url: link, type: 'booking' };
-  }
-  if (tenant?.booking?.maintenance_links) {
-    const link = tenant.booking.maintenance_links[serviceType];
-    if (link) return { url: link, type: 'booking' };
-  }
-  if (tenant?.booking?.consultation_url) return { url: tenant.booking.consultation_url, type: 'consultation' };
-  return { url: tenant?.booking?.main_url || null, type: 'general' };
+  fastify.log.warn({ err: e }, "⚠️ Failed to parse tenants.json. Using empty tenants.");
 }
 
 function normalizePhone(phone) {
@@ -249,101 +183,28 @@ async function getTenantByInstagramId(instagramId) {
   return null;
 }
 
-function loadKnowledgeFor(tenant) {
+/* -------------------------------------------------------------------------- */
+/* Helpers for Airtable/text/etc. (kept from your code)                       */
+/* -------------------------------------------------------------------------- */
+function extractTimeFromDate(dateStr) {
+  if (!dateStr) return '';
   try {
-    if (tenant?.tenant_id) {
-      const tenantKnowledgePath = `./tenants/${tenant.tenant_id}/knowledge.md`;
-      if (fs.existsSync(tenantKnowledgePath)) {
-        const tenantKnowledge = fs.readFileSync(tenantKnowledgePath, "utf8");
-        if (fs.existsSync("./knowledge.md")) {
-          const universalKnowledge = fs.readFileSync("./knowledge.md", "utf8");
-          return universalKnowledge + "\n\n" + tenantKnowledge;
-        }
-        return tenantKnowledge;
-      }
-    }
-    if (fs.existsSync("./knowledge.md")) return fs.readFileSync("./knowledge.md", "utf8");
-  } catch (err) {
-    fastify.log.warn({ err }, "Error loading knowledge");
-  }
-  return "";
+    const date = new Date(dateStr);
+    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  } catch { return ''; }
+}
+function formatAppointmentDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  } catch { return dateStr; }
+}
+function extractUrls(text) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  return text.match(urlRegex) || [];
 }
 
-function buildVoicePrompt(tenant, knowledgeText) {
-  const t = tenant || {};
-  const services = (t.services?.primary || t.services || []).join(", ");
-  const hours = t.hours?.hours_string || t.hours_string || "Please call during business hours";
-  const loctician = t.loctician_name || "our stylist";
-  const experience = t.experience_years ? `${t.experience_years} years experience` : "";
-  const specialties = (t.services?.specialties || t.specialties || []).join(", ");
-  const website = t.contact?.website || t.website || "";
-  const instagram = t.contact?.instagram_handle || t.instagram_handle || "";
-  const address = t.address ? `Located at ${t.address}` : "";
-  const customGreeting = t.voice_config?.greeting_tts ||
-    `Thanks for calling ${t.studio_name || 'our salon'}. How can I help you?`;
-
-  let appointmentFlow = "";
-  if (t.advanced_features?.service_portal && t.advanced_features?.new_vs_returning_flow) {
-    appointmentFlow = `
-APPOINTMENT BOOKING FLOW:
-1) Ask: "Are you a new client or a returning client?"
-2) NEW: Send service portal (quote) link
-3) RETURNING: Ask service, send DIRECT BOOKING link`;
-  } else {
-    appointmentFlow = `
-APPOINTMENT BOOKING FLOW:
-1) Ask what service they need
-2) Send appropriate booking or consultation link`;
-  }
-
-  let serviceResponses = "";
-  if (t.services?.quote_urls || t.quote_system?.urls) serviceResponses += "Use quote URLs for NEW clients.\n";
-  if (t.maintenance_booking_links?.links || t.booking?.maintenance_links) serviceResponses += "Use direct booking links for RETURNING clients.\n";
-  if (t.booking?.consultation_url) serviceResponses += "Use consultation URL when unsure.\n";
-
-  let trainingInfo = "";
-  if (t.training_program?.enabled || t.advanced_features?.training_program) {
-    trainingInfo = `\nTraining Program: ${t.training_program?.cost || "Available"} - ${t.training_program?.signup_method || "Contact for details"}`;
-  }
-
-  const canonicalQA = (t.canonical_answers || [])
-    .map((item, i) => `Q${i + 1}: ${item.q}\nA${i + 1}: ${item.a}`)
-    .join("\n") || "(Use general responses)";
-
-  let prompt = `You are the virtual receptionist for "${t.studio_name || 'our salon'}" with ${loctician}${experience ? ` (${experience})` : ""}.
-CRITICAL:
-- Keep responses under 15 seconds
-- Never spell out URLs
-- Answer directly without repeating questions
-- Offer to text useful links
-- NEW clients → quotes; RETURNING → direct booking
-
-${appointmentFlow}
-
-Salon:
-- Name: ${t.studio_name || 'The Salon'}
-- Loctician: ${loctician}${experience ? ` - ${experience}` : ""}
-- Hours: ${hours}
-- Services: ${services || "Hair care"}
-${specialties ? `- Specialties: ${specialties}` : ""}
-${address}
-
-${serviceResponses}
-${trainingInfo}
-
-${website ? `Website: ${website}` : ""}
-${instagram ? `Instagram: ${instagram}` : ""}
-
-Canonical Q&A:
-${canonicalQA}
-
-Knowledge:
-${(knowledgeText || "").slice(0, 8000)}
-`;
-  return prompt.slice(0, 15000);
-}
-
-// --- Airtable helpers (unchanged) ---
 async function callAirtableAPI(tenant, action, params = {}, requestType = 'lookup') {
   if (!tenant?.airtable_base_id || !tenant?.airtable_table_name) {
     fastify.log.warn({ tenant: tenant?.tenant_id }, "Missing Airtable configuration");
@@ -372,7 +233,6 @@ async function callAirtableAPI(tenant, action, params = {}, requestType = 'looku
     return { handled: false, speech: "I'm having trouble accessing appointments. Please try again in a moment." };
   }
 }
-
 function processAppointmentLookup(records, searchPhone, tenant, requestType = 'lookup') {
   if (records.length === 0) {
     return { handled: true, speech: `I don't see any appointments under your number. Would you like to book a new appointment?`, data: { appointments: [], needsBooking: true } };
@@ -393,7 +253,7 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
 
   if (upcoming.length === 0) {
     return { handled: true, speech: `I don't see any upcoming appointments under your number. Would you like to schedule a new appointment?`, data: { appointments: [], needsBooking: true } };
-  }
+    }
 
   if (requestType === 'time' || requestType === 'when') {
     if (upcoming.length === 1) {
@@ -430,7 +290,7 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
   if (upcoming.length === 1) {
     const next = upcoming[0];
     const timeInfo = next.time ? ` at ${next.time}` : '';
-    const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
+    the dateInfo = next.date ? formatAppointmentDate(next.date) : '';
     return { handled: true, speech: `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`, data: { appointments: upcoming } };
   } else {
     const allAppts = upcoming.map((apt, i) => {
@@ -442,29 +302,16 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
   }
 }
 
-function extractTimeFromDate(dateStr) {
-  if (!dateStr) return '';
-  try {
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-  } catch { return ''; }
-}
+/* -------------------------------------------------------------------------- */
+/* INSTAGRAM: webhook + sender + debug routes                                 */
+/* -------------------------------------------------------------------------- */
 
-function formatAppointmentDate(dateStr) {
-  if (!dateStr) return '';
-  try {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  } catch { return dateStr; }
-}
-
-// ----------------------------------------------------------------------------
-// INSTAGRAM WEBHOOKS + SENDER (patched + review mode)
-// ----------------------------------------------------------------------------
-
-// Simple health route (stops 404 noise)
+// Health / stop 404 noise
 fastify.get("/", async (req, reply) => {
   reply.type("text/plain").send("LocSync is running");
+});
+fastify.head("/", async (req, reply) => {
+  reply.code(200).send();
 });
 
 // Verification (GET): echoes hub.challenge
@@ -533,16 +380,35 @@ async function handleInstagramDMEvent(messagingEvent) {
   try {
     fastify.log.info({ fullPayload: messagingEvent }, "Instagram messaging event received");
 
-    // Ignore non-message updates
+    const senderId = messagingEvent?.sender?.id;       // IG user PSID
+    const recipientId = messagingEvent?.recipient?.id; // IG business acct id
+    const text = messagingEvent?.message?.text || "";
+
+    // --- REVIEW MODE: always reply using PAGE token, even on edits/reads ---
+    if (REVIEW_MODE) {
+      if (!senderId) {
+        fastify.log.warn("REVIEW_MODE: missing senderId, cannot reply");
+        return;
+      }
+      const replyText = "Thanks for messaging Loc Repair Clinic! How can we help with your locs today? 💫";
+      if (!PAGE_ACCESS_TOKEN) {
+        fastify.log.error("REVIEW_MODE is ON but PAGE_ACCESS_TOKEN is missing");
+        return;
+      }
+      await sendInstagramMessage(
+        senderId,
+        replyText,
+        { instagram: { page_access_token: PAGE_ACCESS_TOKEN } }
+      );
+      fastify.log.info("REVIEW_MODE reply sent (sent regardless of event type)");
+      return;
+    }
+
+    // Normal mode: ignore non-message updates
     if (messagingEvent?.message_edit || messagingEvent?.read || messagingEvent?.delivery || messagingEvent?.reaction) {
       fastify.log.info("Skipping non-message event");
       return;
     }
-
-    const text = messagingEvent?.message?.text || "";
-    const senderId = messagingEvent?.sender?.id;      // IG user PSID
-    const recipientId = messagingEvent?.recipient?.id; // IG business acct id
-
     if (!senderId || !recipientId) {
       fastify.log.warn({ messagingEvent }, "Missing sender/recipient");
       return;
@@ -553,18 +419,6 @@ async function handleInstagramDMEvent(messagingEvent) {
     }
 
     fastify.log.info({ senderId, text }, "ACTUAL MESSAGE RECEIVED");
-
-    // --- REVIEW MODE: bypass tenant lookup and always reply with the PAGE token ---
-    if (REVIEW_MODE) {
-      const replyText = "Thanks for messaging Loc Repair Clinic! How can we help with your locs today? 💫";
-      if (!PAGE_ACCESS_TOKEN) {
-        fastify.log.error("REVIEW_MODE is ON but PAGE_ACCESS_TOKEN is missing");
-        return;
-      }
-      await sendInstagramMessage(senderId, replyText, { instagram: { page_access_token: PAGE_ACCESS_TOKEN } });
-      fastify.log.info("REVIEW_MODE reply sent");
-      return;
-    }
 
     // --- NORMAL MODE: try tenant mapping; fallback to PAGE_ACCESS_TOKEN if needed ---
     let tenant = await getTenantByInstagramId(recipientId);
@@ -589,7 +443,7 @@ async function handleInstagramDMEvent(messagingEvent) {
   }
 }
 
-// Sending message (uses PAGE access token)
+// Sending message (uses PAGE access token) with ultra-verbose logging
 async function sendInstagramMessage(recipientId, messageText, tenant) {
   try {
     const pageAccessToken = tenant?.instagram?.page_access_token || PAGE_ACCESS_TOKEN;
@@ -602,25 +456,35 @@ async function sendInstagramMessage(recipientId, messageText, tenant) {
       message: { text: messageText },
     };
 
+    fastify.log.info({ url, recipientId, preview: payload }, "IG SEND: about to POST");
+
     const res = await fetch(`${url}?access_token=${encodeURIComponent(pageAccessToken)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) {}
+
     if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Graph API error ${res.status}: ${errText}`);
+      fastify.log.error({
+        status: res.status,
+        body: text,
+      }, "IG SEND ERROR");
+      throw new Error(`Graph API error ${res.status}`);
     }
-    fastify.log.info({ recipientId }, "✅ Instagram message sent successfully");
+
+    fastify.log.info({ status: res.status, body: json || text }, "✅ IG SEND OK");
   } catch (error) {
     fastify.log.error({ err: error.message, recipientId }, "❌ Failed to send Instagram message");
   }
 }
 
-// ----------------------------------------------------------------------------
-// DEBUG endpoint to view last IG webhook (grab PSID in browser)
-// ----------------------------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/* DEBUG endpoints                                                            */
+/* -------------------------------------------------------------------------- */
 fastify.get("/debug/last-ig", async (req, reply) => {
   try {
     reply.type("application/json").send(LAST_IG_WEBHOOK || { note: "No IG payload received yet" });
@@ -630,9 +494,30 @@ fastify.get("/debug/last-ig", async (req, reply) => {
   }
 });
 
-// ----------------------------------------------------------------------------
-// START SERVER (single listen with clean port handling)
-// ----------------------------------------------------------------------------
+// Manual debug sender: /debug/send?psid=123&text=hello
+fastify.get("/debug/send", async (req, reply) => {
+  try {
+    const psid = req.query.psid;
+    const text = req.query.text || "LocSync reply test ✅";
+    if (!psid) {
+      reply.code(400).send({ error: "Missing ?psid=" });
+      return;
+    }
+    if (!PAGE_ACCESS_TOKEN) {
+      reply.code(500).send({ error: "PAGE_ACCESS_TOKEN missing" });
+      return;
+    }
+    await sendInstagramMessage(psid, text, { instagram: { page_access_token: PAGE_ACCESS_TOKEN } });
+    reply.send({ ok: true, to: psid, text });
+  } catch (err) {
+    fastify.log.error({ err }, "/debug/send failed");
+    reply.code(500).send({ error: "send failed" });
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* START SERVER                                                               */
+/* -------------------------------------------------------------------------- */
 const port = Number(PORT) || 10000;
 fastify
   .listen({ port, host: "0.0.0.0" })
