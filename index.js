@@ -20,7 +20,7 @@ const {
   OPENAI_API_KEY,
   AIRTABLE_PAT,
   INSTAGRAM_VERIFY_TOKEN,
-  PAGE_ACCESS_TOKEN,        // <-- ensure this is set in your env
+  PAGE_ACCESS_TOKEN,        // <-- set this in Render env
   PORT = 10000,
 } = process.env;
 
@@ -76,7 +76,7 @@ async function respondWithNaturalVoice(response, text, tenant) {
         const audioFilename = `audio_${Date.now()}.mp3`;
         const audioPath = `/tmp/${audioFilename}`;
         fs.writeFileSync(audioPath, Buffer.from(audioBuffer));
-        // NOTE: ensure you serve /audio/* elsewhere if you rely on this URL
+        // NOTE: ensure you serve /audio/* if you rely on this URL
         response.play(`https://locsync-q7z9.onrender.com/audio/${audioFilename}`);
         fastify.log.info("Using ElevenLabs voice for response");
         return true;
@@ -475,14 +475,30 @@ fastify.post("/instagram-webhook", async (req, reply) => {
       return;
     }
 
-    // Events: entry[].changes[].value.messaging[]
+    // Collect events from BOTH possible IG payload shapes
+    const collected = [];
+
+    // Shape A: entry[].messaging[]
+    for (const entry of body.entry || []) {
+      if (Array.isArray(entry.messaging)) {
+        collected.push(...entry.messaging);
+      }
+    }
+
+    // Shape B: entry[].changes[].value.messaging[]
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         const msgs = change?.value?.messaging || [];
-        for (const messagingEvent of msgs) {
-          await handleInstagramDMEvent(messagingEvent);
+        if (Array.isArray(msgs) && msgs.length) {
+          collected.push(...msgs);
         }
       }
+    }
+
+    fastify.log.info({ count: collected.length }, "IG: collected messaging events");
+
+    for (const evt of collected) {
+      await handleInstagramDMEvent(evt);
     }
 
     // Always acknowledge
