@@ -330,11 +330,12 @@ fastify.get("/instagram-webhook", async (req, reply) => {
   }
 });
 
+
 // Instagram message handler (correct Instagram payload shape)
 fastify.post("/instagram-webhook", async (req, reply) => {
   try {
     const body = req.body;
-
+fastify.log.info({ rawPayload: JSON.stringify(messagingEvent) }, "Webhook message event");
     if (body.object !== "instagram") {
       reply.code(400).send("Not an Instagram object");
       return;
