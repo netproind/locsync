@@ -29,11 +29,9 @@ const {
 
 const REVIEW_MODE = (IG_REVIEW_MODE === "true");
 
+// Not fatal for IG review; leave server running even if some vars are missing
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI_API_KEY || !AIRTABLE_PAT) {
-  console.error("❌ Missing required environment variables");
-  // Not fatal for IG DM testing, but fatal for the overall server if you rely on voice/Airtable.
-  // Comment the next line if you want to ignore this during IG review only.
-  // process.exit(1);
+  fastify.log.warn("⚠️ Some env vars are missing (OK for IG review mode).");
 }
 
 const twiml = twilio.twiml.VoiceResponse;
@@ -233,6 +231,7 @@ async function callAirtableAPI(tenant, action, params = {}, requestType = 'looku
     return { handled: false, speech: "I'm having trouble accessing appointments. Please try again in a moment." };
   }
 }
+
 function processAppointmentLookup(records, searchPhone, tenant, requestType = 'lookup') {
   if (records.length === 0) {
     return { handled: true, speech: `I don't see any appointments under your number. Would you like to book a new appointment?`, data: { appointments: [], needsBooking: true } };
@@ -253,7 +252,7 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
 
   if (upcoming.length === 0) {
     return { handled: true, speech: `I don't see any upcoming appointments under your number. Would you like to schedule a new appointment?`, data: { appointments: [], needsBooking: true } };
-    }
+  }
 
   if (requestType === 'time' || requestType === 'when') {
     if (upcoming.length === 1) {
@@ -290,8 +289,12 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
   if (upcoming.length === 1) {
     const next = upcoming[0];
     const timeInfo = next.time ? ` at ${next.time}` : '';
-    the dateInfo = next.date ? formatAppointmentDate(next.date) : '';
-    return { handled: true, speech: `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`, data: { appointments: upcoming } };
+    const dateInfo = next.date ? formatAppointmentDate(next.date) : '';
+    return {
+      handled: true,
+      speech: `You have an appointment for ${next.service} scheduled for ${dateInfo}${timeInfo}. How can I help you with it?`,
+      data: { appointments: upcoming }
+    };
   } else {
     const allAppts = upcoming.map((apt, i) => {
       const aptTime = apt.time ? ` at ${apt.time}` : '';
