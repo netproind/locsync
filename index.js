@@ -650,9 +650,14 @@ fastify.get("/tenant", async (req, reply) => {
 });
 
 // ---------------- SERVER START ----------------
-const PORT = process.env.PORT || 10000;
-fastify.listen({ port: PORT, host: "0.0.0.0" })
-  .then(() => fastify.log.info(`🚀 Server listening on ${PORT}`))
+// REMOVE this line:
+// const PORT = process.env.PORT || 10000;
+
+// REPLACE your listen block with:
+const port = Number(PORT) || 10000;
+fastify
+  .listen({ port, host: "0.0.0.0" })
+  .then(() => fastify.log.info(`🚀 Server listening on ${port}`))
   .catch((err) => {
     fastify.log.error({ err }, "Failed to start server");
     process.exit(1);
