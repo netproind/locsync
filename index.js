@@ -655,98 +655,123 @@ fastify.get("/instagram-webhook", async (req, reply) => {
 });
 
 // Instagram message handler
+// === PATCH START: Instagram Webhook (correct structure) ===
 fastify.post("/instagram-webhook", async (req, reply) => {
-  const body = req.body;
-  
   try {
-    if (body.object === 'instagram') {
-      for (const entry of body.entry) {
-        if (entry.messaging) {
-          for (const event of entry.messaging) {
-            await handleInstagramDM(event);
-          }
+    const body = req.body;
+
+    // Must be 'instagram' or Meta won't route DM events here
+    if (body.object !== "instagram") {
+      reply.code(400).send("Not an Instagram object");
+      return;
+    }
+
+    // Instagram DM events: entry[].changes[].value.messaging[]
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        const msgs = change?.value?.messaging || [];
+        for (const messagingEvent of msgs) {
+          await handleInstagramDMEvent(messagingEvent);
         }
       }
     }
-    reply.send('EVENT_RECEIVED');
+
+    // Acknowledge immediately so Meta stops retrying
+    reply.send("EVENT_RECEIVED");
   } catch (error) {
     fastify.log.error({ err: error }, "Instagram webhook error");
-    reply.send('ERROR');
+    // Still 200 so Meta doesn’t keep retrying on transient errors
+    reply.code(200).send("ERROR");
   }
 });
 
-async function handleInstagramDM(event) {
+// Unified handler for a single Instagram messaging event
+async function handleInstagramDMEvent(messagingEvent) {
   try {
-    fastify.log.info({ fullPayload: JSON.stringify(event) }, "Instagram webhook received");
-    
-    // Instagram sends events in entry array
-    if (!event.entry || !event.entry[0] || !event.entry[0].messaging) {
-      fastify.log.info("Not a messaging event");
+    fastify.log.info(
+      { fullPayload: messagingEvent },
+      "Instagram messaging event received"
+    );
+
+    // Ignore non-message events
+    if (
+      messagingEvent?.message_edit ||
+      messagingEvent?.read ||
+      messagingEvent?.delivery ||
+      messagingEvent?.reaction
+    ) {
+      fastify.log.info("Skipping non-message event");
       return;
     }
-    
-    for (const entry of event.entry) {
-      if (!entry.messaging) continue;
-      
-      for (const msg of entry.messaging) {
-        // Skip non-message events
-        if (msg.message_edit || msg.read || msg.delivery || msg.reaction) {
-          fastify.log.info("Skipping non-message event");
-          continue;
-        }
-        
-        // Process actual messages
-        if (!msg.message || !msg.message.text) {
-          fastify.log.info("No text message");
-          continue;
-        }
-        
-        const senderId = msg.sender.id;
-        const recipientId = msg.recipient.id;
-        const messageText = msg.message.text;
-        
-        fastify.log.info({ senderId, messageText }, "ACTUAL MESSAGE RECEIVED");
-        
-        const tenant = await getTenantByInstagramId(recipientId);
-        if (!tenant?.instagram?.access_token) {
-          fastify.log.error("No tenant or access token");
-          continue;
-        }
-        
-        await sendInstagramMessage(senderId, "Hi! Thanks for your message. How can we help?", tenant);
-      }
+
+    const text = messagingEvent?.message?.text || "";
+    const senderId = messagingEvent?.sender?.id;       // IG user PSID
+    const recipientId = messagingEvent?.recipient?.id;  // Your IG business account id
+
+    if (!senderId || !recipientId) {
+      fastify.log.warn({ messagingEvent }, "Missing sender/recipient in event");
+      return;
     }
-    
+    if (!text) {
+      fastify.log.info("No text message");
+      return;
+    }
+
+    fastify.log.info({ senderId, text }, "ACTUAL MESSAGE RECEIVED");
+
+    // Map the IG business account (recipient) to your tenant/app config
+    const tenant = await getTenantByInstagramId(recipientId);
+    if (!tenant) {
+      fastify.log.error("No tenant found for this Instagram account");
+      return;
+    }
+
+    // Simple auto-reply for testing/App Review; you can swap in your bot logic here
+    const replyText =
+      tenant?.instagram?.greeting_message ||
+      "Hi! Thanks for your message. How can we help?";
+
+    await sendInstagramMessage(senderId, replyText, tenant);
   } catch (error) {
-    fastify.log.error({ err: error, stack: error.stack }, "Instagram error");
+    fastify.log.error({ err: error, stack: error.stack }, "handleInstagramDMEvent error");
   }
 }
+// === PATCH END ===
+// === PATCH START: Send Instagram Message ===
 async function sendInstagramMessage(recipientId, messageText, tenant) {
   try {
-    const response = await fetch(`https://graph.instagram.com/v18.0/me/messages`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${tenant.instagram.access_token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        message: { text: messageText }
-      })
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.text();
-      throw new Error(`Instagram API error: ${response.status} - ${errorData}`);
+    // ⚠️ Must be a PAGE access token (from FB Page linked to your IG account)
+    const pageAccessToken =
+      tenant?.instagram?.page_access_token || process.env.PAGE_ACCESS_TOKEN;
+
+    if (!pageAccessToken) {
+      throw new Error("Missing PAGE access token");
     }
-    
-    fastify.log.info({ recipientId, tenant: tenant.tenant_id }, "Instagram message sent successfully");
-    
+
+    const url = "https://graph.facebook.com/v21.0/me/messages"; // ✅ Correct endpoint
+    const payload = {
+      messaging_product: "instagram", // ✅ Must specify this for IG DMs
+      recipient: { id: recipientId },
+      message: { text: messageText },
+    };
+
+    const res = await fetch(`${url}?access_token=${encodeURIComponent(pageAccessToken)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Graph API error ${res.status}: ${errText}`);
+    }
+
+    fastify.log.info({ recipientId }, "✅ Instagram message sent successfully");
   } catch (error) {
-    fastify.log.error({ err: error, recipientId }, "Failed to send Instagram message");
+    fastify.log.error({ err: error.message, recipientId }, "❌ Failed to send Instagram message");
   }
 }
-
+// === PATCH END ===
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
   return { 
