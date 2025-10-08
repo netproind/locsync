@@ -27,6 +27,9 @@ const twiml = twilio.twiml.VoiceResponse;
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
+// ---- IG DEBUG BUFFER ----
+let LAST_IG_WEBHOOK = null;
+
 // ---------------- ELEVENLABS INTEGRATION ----------------
 async function generateElevenLabsAudio(text, tenant) {
   try {
