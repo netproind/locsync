@@ -22,7 +22,10 @@ const {
   INSTAGRAM_VERIFY_TOKEN,
   PAGE_ACCESS_TOKEN,        // <-- set this in Render env
   PORT = 10000,
+  IG_REVIEW_MODE,           // "true" enables review/bypass mode
 } = process.env;
+
+const REVIEW_MODE = (IG_REVIEW_MODE === "true");
 
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER || !OPENAI_API_KEY || !AIRTABLE_PAT) {
   console.error("❌ Missing required environment variables");
@@ -91,7 +94,7 @@ async function respondWithNaturalVoice(response, text, tenant) {
 }
 
 // ----------------------------------------------------------------------------
-// Tenants loading (unchanged)
+// Tenants loading (unchanged structure, safer parsing)
 // ----------------------------------------------------------------------------
 let TENANTS = {};
 let TENANT_DETAILS = new Map();
@@ -185,11 +188,13 @@ function normalizePhone(phone) {
 }
 
 function loadTenantDetails(tenantId) {
+  // Safe loader: never throw on bad JSON — just log and skip
   if (TENANT_DETAILS.has(tenantId)) return TENANT_DETAILS.get(tenantId);
   try {
     const detailsPath = `./tenants/${tenantId}/config.json`;
     if (fs.existsSync(detailsPath)) {
-      const details = JSON.parse(fs.readFileSync(detailsPath, "utf8"));
+      const raw = fs.readFileSync(detailsPath, "utf8");
+      const details = JSON.parse(raw);
       if (details.instagram?.access_token) {
         details.instagram.webhook_enabled = true;
         fastify.log.info({ tenantId, instagram: details.instagram.username }, "Instagram integration enabled");
@@ -198,7 +203,7 @@ function loadTenantDetails(tenantId) {
       return details;
     }
   } catch (err) {
-    fastify.log.warn({ err, tenantId }, "Error loading tenant details");
+    fastify.log.warn({ err, tenantId }, "Error loading tenant details (skipping)");
   }
   return {};
 }
@@ -225,11 +230,21 @@ function getTenantByToNumber(toNumber) {
   return baseTenant;
 }
 
-// Map IG business account id to a tenant
+// Map IG business account id to a tenant (forgiving)
 async function getTenantByInstagramId(instagramId) {
+  // 1) Inline mapping on TENANTS entries
   for (const [phoneNumber, tenant] of Object.entries(TENANTS)) {
+    if (tenant?.instagram?.business_account_id === instagramId) {
+      const full = getTenantByToNumber(phoneNumber); // enrich if possible
+      return { ...tenant, ...full };
+    }
+  }
+  // 2) Enriched tenants (may read per-tenant config)
+  for (const [phoneNumber] of Object.entries(TENANTS)) {
     const fullTenant = getTenantByToNumber(phoneNumber);
-    if (fullTenant?.instagram?.business_account_id === instagramId) return fullTenant;
+    if (fullTenant?.instagram?.business_account_id === instagramId) {
+      return fullTenant;
+    }
   }
   return null;
 }
@@ -265,7 +280,7 @@ function buildVoicePrompt(tenant, knowledgeText) {
   const instagram = t.contact?.instagram_handle || t.instagram_handle || "";
   const address = t.address ? `Located at ${t.address}` : "";
   const customGreeting = t.voice_config?.greeting_tts ||
-    `Thank you for calling ${t.studio_name || 'our salon'}. How can I help you?`;
+    `Thanks for calling ${t.studio_name || 'our salon'}. How can I help you?`;
 
   let appointmentFlow = "";
   if (t.advanced_features?.service_portal && t.advanced_features?.new_vs_returning_flow) {
@@ -444,8 +459,13 @@ function formatAppointmentDate(dateStr) {
 }
 
 // ----------------------------------------------------------------------------
-// INSTAGRAM WEBHOOKS + SENDER (patched)
+// INSTAGRAM WEBHOOKS + SENDER (patched + review mode)
 // ----------------------------------------------------------------------------
+
+// Simple health route (stops 404 noise)
+fastify.get("/", async (req, reply) => {
+  reply.type("text/plain").send("LocSync is running");
+});
 
 // Verification (GET): echoes hub.challenge
 fastify.get("/instagram-webhook", async (req, reply) => {
@@ -534,13 +554,35 @@ async function handleInstagramDMEvent(messagingEvent) {
 
     fastify.log.info({ senderId, text }, "ACTUAL MESSAGE RECEIVED");
 
-    const tenant = await getTenantByInstagramId(recipientId);
-    if (!tenant) {
-      fastify.log.error("No tenant found for this Instagram account");
+    // --- REVIEW MODE: bypass tenant lookup and always reply with the PAGE token ---
+    if (REVIEW_MODE) {
+      const replyText = "Thanks for messaging Loc Repair Clinic! How can we help with your locs today? 💫";
+      if (!PAGE_ACCESS_TOKEN) {
+        fastify.log.error("REVIEW_MODE is ON but PAGE_ACCESS_TOKEN is missing");
+        return;
+      }
+      await sendInstagramMessage(senderId, replyText, { instagram: { page_access_token: PAGE_ACCESS_TOKEN } });
+      fastify.log.info("REVIEW_MODE reply sent");
       return;
     }
 
-    const replyText = tenant?.instagram?.greeting_message || "Hi! Thanks for your message. How can we help?";
+    // --- NORMAL MODE: try tenant mapping; fallback to PAGE_ACCESS_TOKEN if needed ---
+    let tenant = await getTenantByInstagramId(recipientId);
+    const replyText =
+      tenant?.instagram?.greeting_message ||
+      "Hi! Thanks for your message. How can we help?";
+
+    if (!tenant) {
+      if (PAGE_ACCESS_TOKEN) {
+        fastify.log.warn("Tenant lookup failed; using PAGE_ACCESS_TOKEN fallback");
+        await sendInstagramMessage(senderId, replyText, { instagram: { page_access_token: PAGE_ACCESS_TOKEN } });
+        return;
+      } else {
+        fastify.log.error("No tenant AND no PAGE_ACCESS_TOKEN; cannot send");
+        return;
+      }
+    }
+
     await sendInstagramMessage(senderId, replyText, tenant);
   } catch (error) {
     fastify.log.error({ err: error, stack: error.stack }, "handleInstagramDMEvent error");
