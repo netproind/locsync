@@ -313,9 +313,6 @@ function processAppointmentLookup(records, searchPhone, tenant, requestType = 'l
 fastify.get("/", async (req, reply) => {
   reply.type("text/plain").send("LocSync is running");
 });
-fastify.head("/", async (req, reply) => {
-  reply.code(200).send();
-});
 
 // Verification (GET): echoes hub.challenge
 fastify.get("/instagram-webhook", async (req, reply) => {
