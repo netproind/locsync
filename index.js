@@ -665,12 +665,47 @@ fastify.post("/incoming-call", async (req, reply) => {
   fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
 
   const response = new twiml();
-  // Use tenant-specific greeting or fallback to default
+  
+  // IMMEDIATE RESPONSE: Quick Twilio TTS while ElevenLabs loads
+  response.say({
+    voice: 'Polly.Joanna-Neural'
+  }, `Thank you for calling ${tenant?.studio_name || "our salon"}. One moment please.`);
+  
+  // Add a short pause (gives ElevenLabs time to generate)
+  response.pause({ length: 1 });
+  
+  // NOW try to use ElevenLabs for the main greeting
   const greeting = tenant?.voice_config?.greeting_tts || 
-    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
-
-  // Use ElevenLabs for greeting if available
-  await respondWithNaturalVoice(response, greeting, tenant);
+    `How can I help you today?`;
+  
+  let audioGenerated = false;
+  
+  if (process.env.ELEVENLABS_API_KEY) {
+    try {
+      const audioBuffer = await generateElevenLabsAudio(greeting, tenant);
+      
+      if (audioBuffer) {
+        const audioFilename = `audio_${Date.now()}.mp3`;
+        const audioPath = `/tmp/${audioFilename}`;
+        fs.writeFileSync(audioPath, Buffer.from(audioBuffer));
+        
+        // Give file a moment to be fully written
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        response.play(`https://locsync-q7z9.onrender.com/audio/${audioFilename}`);
+        audioGenerated = true;
+        fastify.log.info({ audioFilename }, "✅ Using your ElevenLabs voice");
+      }
+    } catch (error) {
+      fastify.log.error({ err: error }, "⚠️ ElevenLabs failed, using Twilio fallback");
+    }
+  }
+  
+  // Fallback if ElevenLabs didn't work
+  if (!audioGenerated) {
+    response.say(greeting);
+    fastify.log.info("Using Twilio TTS fallback for main greeting");
+  }
   
   response.gather({
     input: "speech",
