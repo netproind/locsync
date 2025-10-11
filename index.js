@@ -722,8 +722,7 @@ fastify.post("/handle-speech", async (req, reply) => {
       input: "speech",
       action: "/handle-speech",
       method: "POST",
-      timeout: 10
-
+      timeout: 10,
 speechTimeout: "auto"
     });
     await respondWithNaturalVoice(response, "I'm waiting for your response.", tenant);
