@@ -26,77 +26,16 @@ const twiml = twilio.twiml.VoiceResponse;
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ---------------- ELEVENLABS INTEGRATION ----------------
-async function generateElevenLabsAudio(text, tenant) {
-  try {
-    // Check if ElevenLabs is configured
-    if (!process.env.ELEVENLABS_API_KEY) {
-      return null; // Will use fallback TTS
-    }
-
-    // Use tenant-specific voice if available, otherwise default
-    const voiceId = tenant?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
-    
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-      {
-        method: 'POST',
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': process.env.ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          text: text,
-          model_id: "eleven_flash_v2_5",
-          voice_settings: {
-            stability: 0.75,
-            similarity_boost: 0.8,
-            speed: 1.0
-          }
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`ElevenLabs API error: ${response.status}`);
-    }
-
-    return await response.arrayBuffer();
-  } catch (error) {
-    fastify.log.error({ err: error }, "ElevenLabs TTS error");
-    return null; // Will fallback to Twilio TTS
-  }
-}
-
-// Helper function to use ElevenLabs or fallback to Twilio TTS
+// ---------------- SIMPLIFIED VOICE RESPONSE (NO ELEVENLABS) ----------------
 async function respondWithNaturalVoice(response, text, tenant) {
-  try {
-    if (process.env.ELEVENLABS_API_KEY) {
-      const audioBuffer = await generateElevenLabsAudio(text, tenant);
-      
-      if (audioBuffer) {
-        // Create temporary audio file for Twilio
-        const audioFilename = `audio_${Date.now()}.mp3`;
-        const audioPath = `/tmp/${audioFilename}`;
-        fs.writeFileSync(audioPath, Buffer.from(audioBuffer));
-        
-        // Serve the file and play it
-        response.play(`https://locsync-q7z9.onrender.com/audio/${audioFilename}`);
-        
-        fastify.log.info('Using ElevenLabs voice for response');
-        return true;
-      }
-    }
-  } catch (error) {
-    fastify.log.error({ err: error }, "Voice generation failed, using fallback");
-  }
-  
-  // Fallback to Twilio TTS
-  response.say(text);
-  fastify.log.info('Using Twilio TTS fallback');
+  // Use Twilio TTS only - simple and reliable
+  response.say({
+    voice: 'Polly.Joanna-Neural'
+  }, text);
+  fastify.log.info('Using Twilio TTS');
   return false;
 }
+
 // ---------------- ENHANCED TENANT LOADING ----------------
 let TENANTS = {};
 let TENANT_DETAILS = new Map();
@@ -325,6 +264,7 @@ function loadKnowledgeFor(tenant) {
   }
   return "";
 }
+
 // DYNAMIC voice prompt builder based on tenant capabilities
 function buildVoicePrompt(tenant, knowledgeText) {
   const t = tenant || {};
@@ -614,98 +554,43 @@ function formatAppointmentDate(dateStr) {
     return dateStr;
   }
 }
+
 // ---------------- ROUTES ----------------
 fastify.get("/", async () => {
   return { 
     status: "ok", 
     service: "LocSync Voice Agent - Multi-Tenant",
     tenants: Object.keys(TENANTS).length,
-    elevenlabs: process.env.ELEVENLABS_API_KEY ? "enabled" : "disabled"
+    voice: "Twilio TTS (Polly.Joanna-Neural)"
   };
 });
 
 fastify.get("/health", async () => {
-  return { status: "healthy", timestamp: new Date().toISOString() };
+  return { 
+    status: "healthy", 
+    timestamp: new Date().toISOString(),
+    voice: "Twilio TTS"
+  };
 });
 
-// ---------------- ELEVENLABS AUDIO SERVING ROUTE ----------------
-fastify.get('/audio/:filename', async (request, reply) => {
-  try {
-    const filename = request.params.filename;
-    const audioPath = `/tmp/${filename}`;
-    
-    if (fs.existsSync(audioPath)) {
-      const audio = fs.readFileSync(audioPath);
-      reply.type('audio/mpeg').send(audio);
-      
-      // Clean up file after serving
-      setTimeout(() => {
-        try { 
-          fs.unlinkSync(audioPath); 
-          fastify.log.info(`Cleaned up audio file: ${filename}`);
-        } catch (e) {
-          fastify.log.warn(`Failed to cleanup audio file: ${filename}`);
-        }
-      }, 5000);
-    } else {
-      reply.code(404).send('Audio not found');
-    }
-  } catch (error) {
-    fastify.log.error({ err: error }, "Error serving audio");
-    reply.code(500).send('Error serving audio');
-  }
-});
-
-// Incoming call handler - uses dynamic greeting from tenant config
+// Incoming call handler - SIMPLIFIED (NO ELEVENLABS)
 fastify.post("/incoming-call", async (req, reply) => {
   const toNumber = (req.body?.To || "").trim();
   const fromNumber = (req.body?.From || "").trim();
   const tenant = getTenantByToNumber(toNumber);
 
-  fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
+  fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "📞 Incoming call");
 
   const response = new twiml();
   
-  // IMMEDIATE RESPONSE: Quick Twilio TTS while ElevenLabs loads
+  // Use tenant-specific greeting or fallback
+  const greeting = tenant?.voice_config?.greeting_tts || 
+    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
+
+  // SIMPLE TWILIO TTS - NO ELEVENLABS
   response.say({
     voice: 'Polly.Joanna-Neural'
-  }, `Thank you for calling ${tenant?.studio_name || "our salon"}. One moment please.`);
-  
-  // Add a short pause (gives ElevenLabs time to generate)
-  response.pause({ length: 1 });
-  
-  // NOW try to use ElevenLabs for the main greeting
-  const greeting = tenant?.voice_config?.greeting_tts || 
-    `How can I help you today?`;
-  
-  let audioGenerated = false;
-  
-  if (process.env.ELEVENLABS_API_KEY) {
-    try {
-      const audioBuffer = await generateElevenLabsAudio(greeting, tenant);
-      
-      if (audioBuffer) {
-        const audioFilename = `audio_${Date.now()}.mp3`;
-        const audioPath = `/tmp/${audioFilename}`;
-        fs.writeFileSync(audioPath, Buffer.from(audioBuffer));
-        
-        // Give file a moment to be fully written
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        response.play(`https://locsync-q7z9.onrender.com/audio/${audioFilename}`);
-        audioGenerated = true;
-        fastify.log.info({ audioFilename }, "✅ Using your ElevenLabs voice");
-      }
-    } catch (error) {
-      fastify.log.error({ err: error }, "⚠️ ElevenLabs failed, using Twilio fallback");
-    }
-  }
-  
-  // Fallback if ElevenLabs didn't work
-  if (!audioGenerated) {
-    response.say(greeting);
-    fastify.log.info("Using Twilio TTS fallback for main greeting");
-  }
+  }, greeting);
   
   response.gather({
     input: "speech",
@@ -766,7 +651,7 @@ fastify.get("/test/:tenantId", async (req, reply) => {
     booking_url: fullTenant?.booking?.main_url || fullTenant?.booking_url || "not configured",
     consultation_url: fullTenant?.booking?.consultation_url || "not configured",
     has_detailed_config: !!TENANT_DETAILS.has(req.params.tenantId),
-    elevenlabs_voice_id: fullTenant?.elevenlabs_voice_id || "using default",
+    voice: "Twilio TTS (Polly.Joanna-Neural)",
     features: {
       multilingual_support: !!fullTenant?.advanced_features?.multilingual_support,
       new_vs_returning_flow: !!fullTenant?.advanced_features?.new_vs_returning_flow,
@@ -811,57 +696,8 @@ fastify.get("/tenant-features/:tenantId", async (req, reply) => {
     has_maintenance_links: !!(fullTenant?.maintenance_booking_links?.links || fullTenant?.booking?.maintenance_links),
     has_consultation: !!fullTenant?.booking?.consultation_url,
     canonical_answers_count: fullTenant?.canonical_answers?.length || 0,
-    elevenlabs_enabled: !!process.env.ELEVENLABS_API_KEY,
-    voice_configuration: {
-      has_custom_voice: !!fullTenant?.elevenlabs_voice_id,
-      voice_id: fullTenant?.elevenlabs_voice_id || "default",
-      fallback_enabled: true
-    }
+    voice: "Twilio TTS (Polly.Joanna-Neural)"
   };
-});
-
-// Test ElevenLabs integration endpoint
-fastify.get("/test-voice/:tenantId", async (req, reply) => {
-  const baseTenant = TENANTS[req.params.tenantId];
-  if (!baseTenant) {
-    return { error: "Tenant not found" };
-  }
-  
-  const fullTenant = getTenantByToNumber(baseTenant.phone_number);
-  const testText = req.query.text || "Hello! This is a test of your salon's voice bot. How does this sound?";
-  
-  try {
-    const audioBuffer = await generateElevenLabsAudio(testText, fullTenant);
-    
-    if (audioBuffer) {
-      // Save test audio file
-      const testFilename = `test_voice_${Date.now()}.mp3`;
-      const testPath = `/tmp/${testFilename}`;
-      fs.writeFileSync(testPath, Buffer.from(audioBuffer));
-      
-      return {
-        status: "success",
-        message: "ElevenLabs voice generation successful",
-        audio_url: `https://locsync-q7z9.onrender.com/audio/${testFilename}`,
-        voice_id: fullTenant?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || "default",
-        test_text: testText
-      };
-    } else {
-      return {
-        status: "fallback",
-        message: "ElevenLabs failed, would use Twilio TTS fallback",
-        elevenlabs_configured: !!process.env.ELEVENLABS_API_KEY
-      };
-    }
-  } catch (error) {
-    fastify.log.error({ err: error }, "Voice test error");
-    return {
-      status: "error",
-      message: "Voice test failed",
-      error: error.message,
-      elevenlabs_configured: !!process.env.ELEVENLABS_API_KEY
-    };
-  }
 });
 
 // Handle speech input - DYNAMIC based on tenant capabilities with RETURNING CLIENT FIX
@@ -875,8 +711,7 @@ fastify.post("/handle-speech", async (req, reply) => {
     speech: speechResult, 
     tenant: tenant?.tenant_id,
     hasServicePortal: !!tenant?.advanced_features?.service_portal,
-    hasQuoteSystem: !!tenant?.advanced_features?.quote_system,
-    elevenLabsEnabled: !!process.env.ELEVENLABS_API_KEY
+    hasQuoteSystem: !!tenant?.advanced_features?.quote_system
   }, "Processing speech");
 
   const response = new twiml();
@@ -887,8 +722,9 @@ fastify.post("/handle-speech", async (req, reply) => {
       input: "speech",
       action: "/handle-speech",
       method: "POST",
-      timeout: 10,
-      speechTimeout: "auto"
+      timeout: 10
+
+speechTimeout: "auto"
     });
     await respondWithNaturalVoice(response, "I'm waiting for your response.", tenant);
     reply.type("text/xml").send(response.toString());
@@ -1148,7 +984,7 @@ fastify.post("/handle-speech", async (req, reply) => {
     if (!handled) {
       for (const handler of serviceHandlers) {
         if (handler.keywords.some(keyword => lowerSpeech.includes(keyword))) {
-          const bookingInfo = getServiceBookingLink(handler.serviceType, tenant, false); // false = not returning client context
+          const bookingInfo = getServiceBookingLink(handler.serviceType, tenant, false);
           
           if (bookingInfo.url) {
             let responseMessage = "";
@@ -1422,6 +1258,6 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   }
   console.log(`🚀 LocSync Voice Bot - Multi-Tenant Edition running on ${address}`);
   console.log(`📞 Configured tenants: ${Object.keys(TENANTS).join(", ")}`);
-  console.log(`🎤 ElevenLabs integration: ${process.env.ELEVENLABS_API_KEY ? "ENABLED" : "DISABLED (using Twilio TTS fallback)"}`);
-  console.log(`✨ UPGRADE: Professional voice quality with natural conversations!`);
+  console.log(`🎤 Voice: Twilio TTS (Polly.Joanna-Neural)`);
+  console.log(`✨ Simple, reliable, and professional!`);
 });
