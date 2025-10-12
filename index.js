@@ -1382,6 +1382,58 @@ fastify.post("/handle-speech", async (req, reply) => {
   reply.type("text/xml").send(response.toString());
 });
 
+// ============================================
+// INSTAGRAM BUSINESS MESSENGER WEBHOOK
+// ============================================
+
+// Webhook verification (GET request from Meta)
+fastify.get('/webhook', async (request, reply) => {
+  const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
+  
+  const mode = request.query['hub.mode'];
+  const token = request.query['hub.verify_token'];
+  const challenge = request.query['hub.challenge'];
+  
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      fastify.log.info('✅ WEBHOOK_VERIFIED');
+      return reply.status(200).send(challenge);
+    } else {
+      fastify.log.warn('❌ Webhook verification failed');
+      return reply.status(403).send('Forbidden');
+    }
+  }
+  
+  return reply.status(400).send('Bad Request');
+});
+
+// Webhook event receiver (POST request from Meta)
+fastify.post('/webhook', async (request, reply) => {
+  const body = request.body;
+  
+  fastify.log.info({ webhookBody: JSON.stringify(body, null, 2) }, '📩 Instagram webhook received');
+  
+  // Acknowledge receipt immediately (Meta requires 200 response within 20 seconds)
+  reply.status(200).send('EVENT_RECEIVED');
+  
+  // Process Instagram messages asynchronously
+  if (body.object === 'instagram') {
+    body.entry.forEach((entry) => {
+      const webhookEvent = entry.messaging?.[0];
+      
+      if (webhookEvent) {
+        fastify.log.info({ event: webhookEvent }, 'Instagram messaging event');
+        
+        // TODO: Handle Instagram messages here
+        // We'll add the actual message handling in the next step
+      }
+    });
+  }
+});
+
+// ============================================
+// END INSTAGRAM WEBHOOK
+// ============================================
 // ---------------- START SERVER ----------------
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
