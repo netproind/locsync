@@ -109,7 +109,8 @@ function extractUrls(text) {
 }
 
 async function sendLinksViaSMS(fromNumber, toNumber, links, tenant, serviceType = null) {
-  if (!links.length || !tenant?.voice_config?.send_links_via_sms) return;
+  if (!links.length) return;
+// REMOVED: !tenant?.voice_config?.send_links_via_sms check
   
   try {
     let message = "";
