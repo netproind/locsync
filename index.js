@@ -518,44 +518,129 @@ fastify.post("/handle-speech", async (req, reply) => {
       return;
     }
     
-    // ===== PRIORITY 4: NEW CLIENT - SPECIFIC SERVICE QUOTE LINKS =====
-    if (!handled) {
-      let quoteLink = null;
-      let serviceName = "";
+    // ===== PRIORITY 4: SERVICE QUESTIONS - DETECT INTENT FIRST =====
+if (!handled) {
+  const serviceKeywords = ['retwist', 'wick', 'interlock', 'sisterlock', 'sister lock', 
+                           'microlock', 'crochet', 'bald coverage', 'bald spot', 
+                           'repair', 'extension', 'starter locs'];
+  
+  let mentionedService = null;
+  for (const keyword of serviceKeywords) {
+    if (lowerSpeech.includes(keyword)) {
+      mentionedService = keyword;
+      break;
+    }
+  }
+  
+  if (mentionedService) {
+    // DETECT INTENT
+    const isInfoIntent = (
+      lowerSpeech.includes('what are') ||
+      lowerSpeech.includes('what is') ||
+      lowerSpeech.includes('tell me about') ||
+      lowerSpeech.includes('tell me more') ||
+      lowerSpeech.includes('explain') ||
+      lowerSpeech.includes('how do') ||
+      lowerSpeech.includes('what\'s the difference') ||
+      lowerSpeech.includes('do you offer') ||
+      lowerSpeech.includes('do you do') ||
+      lowerSpeech.includes('can you do') ||
+      lowerSpeech.includes('more info') ||
+      lowerSpeech.includes('learn about') ||
+      lowerSpeech.includes('information about')
+    );
+    
+    const isPricingIntent = (
+      lowerSpeech.includes('how much') ||
+      lowerSpeech.includes('cost') ||
+      lowerSpeech.includes('price') ||
+      lowerSpeech.includes('pricing') ||
+      lowerSpeech.includes('get a quote') ||
+      lowerSpeech.includes('quote for')
+    );
+    
+    const isBookingIntent = (
+      lowerSpeech.includes('book') ||
+      lowerSpeech.includes('appointment') ||
+      lowerSpeech.includes('schedule')
+    );
+    
+    // HANDLE BASED ON INTENT
+    if (isInfoIntent) {
+      // INFO INTENT: Answer from knowledge, then offer quote
+      fastify.log.info({ service: mentionedService }, "ℹ️ INFO INTENT - Using knowledge base");
       
-      if (lowerSpeech.includes('retwist') || lowerSpeech.includes('palm roll')) {
+      const knowledgeText = loadKnowledgeFor(tenant);
+      const systemPrompt = buildVoicePrompt(tenant, knowledgeText);
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        temperature: 0.7,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: speechResult }
+        ],
+        max_tokens: 200
+      });
+
+      const aiResponse = completion.choices?.[0]?.message?.content?.trim() || 
+        "Let me help you with that.";
+      
+      await respondWithNaturalVoice(response, aiResponse, tenant);
+      
+      // OFFER QUOTE AFTER ANSWERING
+      await respondWithNaturalVoice(response, `Would you like to get a personalized quote for ${mentionedService.replace('_', ' ')}?`, tenant);
+      
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      
+      handled = true;
+      reply.type("text/xml").send(response.toString());
+      return;
+      
+    } else if (isPricingIntent) {
+      // PRICING INTENT: Send quote link immediately
+      fastify.log.info({ service: mentionedService }, "💰 PRICING INTENT - Sending quote");
+      
+      let quoteLink = null;
+      let serviceName = mentionedService;
+      
+      if (mentionedService === 'retwist') {
         quoteLink = "https://www.locrepair.com/retwist-quote/";
         serviceName = "retwist";
-      } else if (lowerSpeech.includes('wick')) {
+      } else if (mentionedService === 'wick') {
         quoteLink = "https://www.locrepair.com/wick-maintenance-quote/";
         serviceName = "wick locs";
-      } else if (lowerSpeech.includes('bald coverage') || lowerSpeech.includes('bald spot')) {
+      } else if (mentionedService.includes('bald')) {
         quoteLink = "https://www.locrepair.com/bald-quote-for-existing-locs/";
         serviceName = "bald coverage";
-      } else if (lowerSpeech.includes('repair')) {
+      } else if (mentionedService === 'repair') {
         quoteLink = "https://www.locrepair.com/repair-quote/";
         serviceName = "loc repair";
-      } else if (lowerSpeech.includes('crochet')) {
+      } else if (mentionedService === 'crochet') {
         quoteLink = "https://www.locrepair.com/crochet-maintenance-quote";
         serviceName = "crochet maintenance";
-      } else if (lowerSpeech.includes('interlock')) {
+      } else if (mentionedService === 'interlock') {
         quoteLink = "https://www.locrepair.com/interlocking-maintenance-quote/";
         serviceName = "interlock maintenance";
-      } else if (lowerSpeech.includes('sisterlock') || lowerSpeech.includes('sister lock') || lowerSpeech.includes('microlock')) {
+      } else if (mentionedService.includes('sisterlock') || mentionedService.includes('microlock')) {
         quoteLink = "https://www.locrepair.com/micro-sister-brother-locs-maintenance-quote/";
         serviceName = "sisterlock/microlock maintenance";
-      } else if (lowerSpeech.includes('starter locs') || lowerSpeech.includes('starting locs')) {
+      } else if (mentionedService.includes('starter')) {
         quoteLink = "https://www.locrepair.com/starter-loc-quote";
         serviceName = "starter locs";
-      } else if (lowerSpeech.includes('extension')) {
+      } else if (mentionedService === 'extension') {
         quoteLink = "https://www.locrepair.com/permanent-loc-extensions-quote/";
         serviceName = "loc extensions";
       }
       
       if (quoteLink) {
-        fastify.log.info({ service: serviceName }, "💰 SENDING QUOTE LINK");
-        
-        await respondWithNaturalVoice(response, `Perfect! I'm texting you the ${serviceName} quote form. Fill it out to get your personalized pricing and booking link.`, tenant);
+        await respondWithNaturalVoice(response, `I'm texting you the ${serviceName} quote form. Fill it out to get personalized pricing.`, tenant);
         await sendLinksViaSMS(fromNumber, toNumber, [quoteLink], tenant, `${serviceName.replace(' ', '_')}_quote`);
         
         response.gather({
@@ -568,11 +653,51 @@ fastify.post("/handle-speech", async (req, reply) => {
         
         await respondWithNaturalVoice(response, "Is there anything else I can help you with?", tenant);
         
+        handled = true;
         reply.type("text/xml").send(response.toString());
         return;
       }
+      
+    } else if (isBookingIntent) {
+      // BOOKING INTENT: Trigger appointment flow
+      fastify.log.info({ service: mentionedService }, "📅 BOOKING INTENT - Starting appointment flow");
+      
+      await respondWithNaturalVoice(response, "Are you a new client or a returning client?", tenant);
+      
+      response.gather({
+        input: "speech",
+        action: "/handle-speech",
+        method: "POST",
+        timeout: 12,
+        speechTimeout: "auto"
+      });
+      
+      handled = true;
+      reply.type("text/xml").send(response.toString());
+      return;
     }
-    
+  }
+}
+
+// ===== HANDLE "YES" RESPONSES TO QUOTE OFFERS =====
+if (!handled && (lowerSpeech.includes('yes') || lowerSpeech.includes('yeah') || 
+    lowerSpeech.includes('sure') || lowerSpeech.includes('okay'))) {
+  
+  // If they said yes, ask what service they want a quote for
+  await respondWithNaturalVoice(response, "Great! Which service would you like a quote for?", tenant);
+  
+  response.gather({
+    input: "speech",
+    action: "/handle-speech",
+    method: "POST",
+    timeout: 12,
+    speechTimeout: "auto"
+  });
+  
+  handled = true;
+  reply.type("text/xml").send(response.toString());
+  return;
+}
     // ===== PRIORITY 5: RETURNING CLIENT RESPONSE =====
     if (!handled && (
       lowerSpeech.includes('returning') ||
