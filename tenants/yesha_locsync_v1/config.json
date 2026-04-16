@@ -3,11 +3,12 @@
   "salon_name": "Lock Repair Clinic",
   "studio_name": "Lock Repair Clinic",
   "loctician_name": "Yesha",
-  "experience_years": 17,
+  "experience_years": 18,
   "base_domain": "locrepair.com",
   "timezone": "America/Detroit",
   "location": "Detroit, Michigan",
-  "address": "25240 Lahser Road, Suite 9, Southfield, Michigan 48033",
+  "address": "26085 Six Mile Road, Suite 1, Redford, Michigan, 48240, inside Wu Salon Suites",
+   ",
   
   "airtable_base_id": "app9lztXMFpEO3mkF",
   "airtable_table_name": "Appointments",
@@ -31,7 +32,7 @@
     "website": "https://www.locrepair.com",
     "instagram_handle": "@locrepairexpert",
     "instagram_url": "https://www.instagram.com/locrepairexpert",
-    "directions_url": "https://www.locrepair.com/directions-and-appointment-info",
+    "directions_url": "https://www.locrepair.com/",
     "review_url": "https://g.page/r/CYyyinc_ntKpEAE/review",
     "appointment_lookup": "https://www.locrepair.com/appointment-lookup.html"
   },
@@ -48,9 +49,9 @@
       "appointment": "Are you a new client or returning client? New clients get quotes from our portal, returning clients can book directly!",
       "hours": "We're open Sunday-Friday 11AM-7PM by appointment only. Closed Saturdays. What service interests you?",
       "pricing": "Our pricing is quote-based since everyone's needs are different. Visit our service portal for personalized quotes!",
-      "location": "📍 25240 Lahser Road, Suite 9, Southfield, MI 48033. Parking in rear with handicap access!",
+      "location": "📍 26085 Six Mile Road, Suite 1, Redford, Michigan, 48240, inside Wu Salon Suites, Parking in front, right at the door!",
       "services": "We specialize in loc repair, bald coverage, wick locs, retwists, crochet maintenance & more! What do you need?",
-      "training": "Yes! $49/week loc repair training program. Text START to 313-455-5627 or DM us for details!"
+      "training": "Yes! Text CLASSES to 313-488-4898 or DM on Instagram @locrepairexpertus for details!"
     },
     "quick_links": {
       "service_portal": "https://www.locrepair.com/service_portal",
@@ -130,10 +131,9 @@
   
   "training_program": {
     "enabled": true,
-    "cost": "$49 per week",
-    "signup_method": "text START to 313-455-5627",
+    "cost": "Text CLASSES for current pricing",
+    "signup_method": "text START to 313-488-4898",
     "instagram_dm": "@locrepairexpert",
-    "bonus": "One free month booth rental ($750+ value)"
   },
   
   "custom_responses": {
@@ -152,16 +152,16 @@
       "maintenance": 25,
       "specialty_services": "higher deposits for bald coverage/extensions",
       "refund_policy": "deposits go toward service",
-      "in_person_payment": "text DEPOSIT to 313-455-5627 to schedule in-person payment"
+      "in_person_payment": "text DEPOSIT to 313-488-4898 to schedule in-person payment"
     },
     "cancellation": {
       "same_day": "forfeits deposit",
       "maintenance": "72 hours notice required for refund", 
       "specialty": "bald coverage and extensions deposits non-refundable",
-      "same_day_text": "text CANCEL to 313-455-LOCS for same day cancellation"
+      "same_day_text": "text CANCEL to 313-488-4898 for same day cancellation"
     },
     "booking_timeframe": "we book within 30 days from today",
-    "parking": "rear of building with handicap access and ramp",
+    "parking": "front of building at Wu Salon Suites entrance",
     "children": "children allowed for their own appointment only",
     "pets": "service animals only"
   },
@@ -215,7 +215,7 @@
     },
     {
       "q": "What's your address?",
-      "a": "We're located at 25240 Lahser Road, Suite 9, Southfield, Michigan 48033. I can text you directions and the address."
+      "a": "We're located at 26085 Six Mile Road, Suite 1, Redford, Michigan, 48240, inside Wu Salon Suites, I can text you directions and the address."
     },
     {
       "q": "Do you speak Spanish?",
@@ -239,11 +239,11 @@
     },
     {
       "q": "Do you offer training classes or courses?",
-      "a": "Yes, we offer a comprehensive Lock Repair Training Program. It's a weekly hands-on program that teaches professional repair skills. The cost is 49 dollars per week and you can cancel anytime. No experience is required - beginners are welcome."
+      "a": "Yes, we offer a comprehensive Lock Repair Training Program. It's a hands-on program that teaches professional repair skills. The cost is based on your individual needs and you can cancel anytime. No experience is required - beginners are welcome."
     },
     {
       "q": "How much does the training cost?",
-      "a": "The training program costs 49 dollars per week and you can cancel anytime. Your first paying client, which typically brings in 95 dollars or more, can cover the cost of your training investment."
+      "a": "The training program cost is based on your individual  needs and you can cancel anytime. Your first paying client, which typically brings in 95 dollars or more, can cover the cost of your training investment."
     },
     {
       "q": "Do I need experience for the training program?",
@@ -259,15 +259,15 @@
     },
     {
       "q": "What bonus do you get for completing training?",
-      "a": "Students who complete the program earn one free month booth rental at the Lock Repair Clinic U Natural Hair in Southfield, Michigan. That's a 750 dollar plus value, which means you can immediately start taking clients and keeping all the money you make."
+      "a": "Students who complete the program earn perks with the Lock Repair Clinic U Natural Hair in Redford, Michigan. That means you can do things immediately start taking clients and keeping all the money you make."
     },
     {
       "q": "Where is the training located?",
-      "a": "Training takes place at the Lock Repair Clinic at U Natural Hair in Southfield, Michigan. You can ask about remote or virtual options if you're not local."
+      "a": "Training takes place at the Lock Repair Clinic at U Natural Hair in Redford, Michigan. You can ask about remote or virtual options if you're not local."
     },
     {
       "q": "How do I sign up for training?",
-      "a": "To enroll, you can text START to 3 1 3 4 5 5 5 6 2 7 or send a direct message to at loc repair expert on Instagram."
+      "a": "To enroll, you can text CLASSES to 3 1 3 4 8 8 4 8 9 8 or send a direct message to at loc repair expert on Instagram."
     },
     {
       "q": "Are there limited spots for training?",
@@ -279,7 +279,7 @@
     },
     {
       "q": "Do you offer remote or online training?",
-      "a": "Training primarily takes place in Southfield, Michigan, but you can ask about remote or virtual options if you're not local."
+      "a": "Training primarily takes place in Redford, Michigan, but you can ask about remote or virtual options if you're not local."
     }
   ],
   
