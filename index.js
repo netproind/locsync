@@ -368,6 +368,7 @@ fastify.post("/incoming-call", async (req, reply) => {
   const toNumber = (req.body?.To || "").trim();
   const fromNumber = (req.body?.From || "").trim();
   const callSid = req.body?.CallSid;
+  fastify.log.info({ callSid }, "📞 CallSid received");
   const tenant = getTenantByToNumber(toNumber);
 
   fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
