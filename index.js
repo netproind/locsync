@@ -383,7 +383,7 @@ response.start().recording({
 });
 
 const greeting = tenant?.voice_config?.greeting_tts || 
-  `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
+  `Thank you for calling ${tenant?.studio_name || "our salon"}. This call may be recorded for quality purposes. How can I help you?`;
 
 await respondWithNaturalVoice(response, greeting, tenant);
   
