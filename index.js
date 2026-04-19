@@ -372,11 +372,20 @@ fastify.post("/incoming-call", async (req, reply) => {
 
   fastify.log.info({ to: toNumber, from: fromNumber, tenant: tenant?.tenant_id }, "Incoming call");
 
+  
   const response = new twiml();
-  const greeting = tenant?.voice_config?.greeting_tts || 
-    `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
 
-  await respondWithNaturalVoice(response, greeting, tenant);
+// Enable call recording
+response.start().recording({
+  recordingStatusCallback: 'https://locsync-q7z9.onrender.com/recording-status',
+  recordingStatusCallbackMethod: 'POST',
+  trim: 'trim-silence'
+});
+
+const greeting = tenant?.voice_config?.greeting_tts || 
+  `Thank you for calling ${tenant?.studio_name || "our salon"}. How can I help you?`;
+
+await respondWithNaturalVoice(response, greeting, tenant);
   
   response.gather({
     input: "speech",
