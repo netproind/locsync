@@ -374,9 +374,10 @@ fastify.post("/incoming-call", async (req, reply) => {
 
   
   const response = new twiml();
-
-// Enable call recording
-response.start().recording({
+  
+  // Enable call recording
+const start = response.start();
+start.recording({
   recordingStatusCallback: 'https://locsync-q7z9.onrender.com/recording-status',
   recordingStatusCallbackMethod: 'POST',
   trim: 'trim-silence'
