@@ -397,7 +397,7 @@ await respondWithNaturalVoice(response, greeting, tenant);
 fastify.post("/call-status", async (req, reply) => {
   const { CallSid, CallStatus } = req.body;
   
-  if (CallStatus === 'in-progress') {
+  if (CallStatus === 'in-progress' || CallStatus === 'answered') {
     try {
       await twilioClient.calls(CallSid).recordings.create({
         recordingStatusCallback: 'https://locsync-q7z9.onrender.com/recording-status',
