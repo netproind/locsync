@@ -376,12 +376,7 @@ fastify.post("/incoming-call", async (req, reply) => {
   const response = new twiml();
   
   // Enable call recording
-const start = response.start();
-start.recording({
-  recordingStatusCallback: 'https://locsync-q7z9.onrender.com/recording-status',
-  recordingStatusCallbackMethod: 'POST',
-  trim: 'trim-silence'
-});
+
 
 const greeting = tenant?.voice_config?.greeting_tts || 
   `Thank you for calling ${tenant?.studio_name || "our salon"}. This call may be recorded for quality purposes. How can I help you?`;
@@ -397,6 +392,24 @@ await respondWithNaturalVoice(response, greeting, tenant);
   });
 
   reply.type("text/xml").send(response.toString());
+});
+
+fastify.post("/call-status", async (req, reply) => {
+  const { CallSid, CallStatus } = req.body;
+  
+  if (CallStatus === 'in-progress') {
+    try {
+      await twilioClient.calls(CallSid).recordings.create({
+        recordingStatusCallback: 'https://locsync-q7z9.onrender.com/recording-status',
+        recordingStatusCallbackMethod: 'POST',
+      });
+      fastify.log.info({ CallSid }, "📼 Recording started");
+    } catch (err) {
+      fastify.log.error({ err, CallSid }, "Failed to start recording");
+    }
+  }
+  
+  reply.send({ received: true });
 });
 
 fastify.post("/incoming-sms", async (req, reply) => {
